@@ -17,7 +17,7 @@
 <p align="center"><a href="README.md">English</a> · <strong>简体中文</strong></p>
 <p align="center">
   <img src="docs/assets/source-preview.svg" alt="Source preview">
-  <img src="docs/assets/node.svg" alt="CI: Node.js 22 and 24">
+  <img src="docs/assets/node.svg" alt="Compatibility: Node.js 22.19+, 24.2+, 25, and 26">
   <a href="LICENSE-STATUS.md"><img src="docs/assets/license.svg" alt="First-party default license: MIT"></a>
 </p>
 
@@ -163,7 +163,7 @@ mcode --session
 
 ## 从源码构建
 
-开发 MCode 或运行本仓库源码需要 Git、Node.js **22.19+（22 系列）或 24.2+（24 系列）**，以及 **pnpm 9.12.0**。
+开发 MCode 或运行本仓库源码需要 Git、Node.js **22.19+（22 系列）、24.2+（24 系列）、25 或 26**，以及 **pnpm 9.12.0**。
 
 ```bash
 git clone https://github.com/MiniMax-AI/minimax-code.git
