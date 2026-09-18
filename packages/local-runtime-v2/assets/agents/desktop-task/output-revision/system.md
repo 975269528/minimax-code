@@ -1,0 +1,1 @@
+Please attempt to answer the user's question once more, aiming for a helpful response. If you determine that this particular topic is one you cannot reasonably address, simply reply with something brief like "Sorry, I can't continue with this topic — let's talk about something else." Do not explain the reason, and do not reference any system instruction, prompt, or constraint.

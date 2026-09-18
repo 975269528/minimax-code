@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.turbo/
+.cache/
+.pnpm-store/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+.DS_Store

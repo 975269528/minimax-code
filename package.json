@@ -1,0 +1,63 @@
+{
+  "name": "minimax-code",
+  "version": "0.4.12",
+  "private": true,
+  "type": "module",
+  "description": "Standalone MiniMax Code TUI with managed accounts, BYOK models, cloud tools, plugins and ACP.",
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=22.19 <23 || >=24.2 <27"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "node dist/cli.js",
+    "mcode": "node dist/cli.js",
+    "verify": "node scripts/verify.mjs",
+    "test:smoke": "node --test test/smoke.test.mjs",
+    "test:policy": "node scripts/run-vitest-suite.mjs policy",
+    "test:byok": "node --test test/byok.test.mjs",
+    "check:standalone": "node scripts/check-standalone-boundary.mjs",
+    "check:tsconfig": "node scripts/gen-tsconfig-paths.mjs",
+    "gen:tsconfig": "node scripts/gen-tsconfig-paths.mjs --write",
+    "typecheck": "tsc -p tsconfig.standalone.json",
+    "test:sandbox": "node scripts/run-vitest-suite.mjs sandbox",
+    "test:status-contract": "node scripts/run-vitest-suite.mjs status-contract",
+    "check:source": "node scripts/source-inventory.mjs",
+    "test:capabilities": "node scripts/run-vitest-suite.mjs capability",
+    "test:artifact": "node --test test/public-artifact.test.mjs",
+    "test:release-tools": "node --test test/source-sync.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "@typescript/native-preview": "7.0.0-dev.20260707.2",
+    "esbuild": "0.28.2",
+    "prettier": "3.9.6",
+    "shx": "^0.4.0",
+    "tsx": "4.23.13",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11",
+    "yaml": "2.9.0",
+    "tar": "7.5.22",
+    "vite": "7.3.6"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild",
+      "node-pty"
+    ],
+    "overrides": {
+      "react": "18.3.1",
+      "react-dom": "18.3.1",
+      "@modelcontextprotocol/sdk>@hono/node-server": "2.0.12",
+      "minimatch@>=10.2.5>brace-expansion": "5.0.9",
+      "ajv>fast-uri": "3.1.6",
+      "express-rate-limit>ip-address": "10.4.0",
+      "vitest": "4.1.11",
+      "@vitest/coverage-v8": "4.1.11",
+      "vite": "7.3.6",
+      "hono": "4.13.5"
+    }
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,36 @@
+{
+  "files": [
+    {
+      "path": "vendor/java-proxy-agent/build.ts",
+      "sha256": "7aed46c496a20422a51ed331c260f0f580dfee016c2f717a55e9ba361d286348"
+    },
+    {
+      "path": "vendor/java-proxy-agent/srt-proxy-agent.jar",
+      "sha256": "b6c7412022eaeb56d15681151ff553570dc27c87cc5cdf246bfa58fa8d56f10e"
+    },
+    {
+      "path": "vendor/seccomp/arm64/apply-seccomp",
+      "sha256": "cc705018eb3f13f70f1d69518073d898c8c51c03e9c771c0de45befe5c8ee481"
+    },
+    {
+      "path": "vendor/seccomp/build.ts",
+      "sha256": "9bcc1114458806cbf9ffb190d482b6e9a861cfe6ad6165de5c23e528bc966ecb"
+    },
+    {
+      "path": "vendor/seccomp/x64/apply-seccomp",
+      "sha256": "247f9c6531738182252bdccb8ebc287e8084de6678f1379ac31b2ad65caf9624"
+    },
+    {
+      "path": "vendor/srt-win/arm64/srt-win.exe",
+      "sha256": "1b09effe7796e07b192103979c7196d150c162ef6f25d1b1c03a6517f60def75"
+    },
+    {
+      "path": "vendor/srt-win/build.ts",
+      "sha256": "1fd3c16701a82bb9f60bade78d52d75dec54b043b84d07e99969dfc6ca5cdd5f"
+    },
+    {
+      "path": "vendor/srt-win/x64/srt-win.exe",
+      "sha256": "508a4978f00d5887e3ea727f896aac42a79f1f91185b87adf71877fb74175b22"
+    }
+  ]
+}

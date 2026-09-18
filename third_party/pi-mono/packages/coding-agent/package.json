@@ -1,0 +1,83 @@
+{
+  "name": "@earendil-works/pi-coding-agent",
+  "version": "0.79.1",
+  "description": "Coding agent CLI with read, bash, edit, write tools and session management",
+  "type": "module",
+  "piConfig": {
+    "configDir": ".pi"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "docs",
+    "examples",
+    "containerization.md",
+    "CHANGELOG.md",
+    "npm-shrinkwrap.json"
+  ],
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "workspace:*",
+    "@earendil-works/pi-ai": "workspace:*",
+    "@earendil-works/pi-tui": "workspace:*",
+    "@silvia-odwyer/photon-node": "0.3.4",
+    "chalk": "5.6.2",
+    "cross-spawn": "7.0.6",
+    "diff": "8.0.4",
+    "glob": "13.0.6",
+    "highlight.js": "10.7.3",
+    "hosted-git-info": "9.0.3",
+    "ignore": "7.0.5",
+    "jiti": "2.7.0",
+    "minimatch": "10.2.6",
+    "proper-lockfile": "4.1.2",
+    "typebox": "1.1.38",
+    "undici": "8.10.2",
+    "yaml": "2.9.0"
+  },
+  "overrides": {
+    "rimraf": "6.1.2",
+    "gaxios": {
+      "rimraf": "6.1.2"
+    }
+  },
+  "optionalDependencies": {
+    "@mariozechner/clipboard": "0.3.9"
+  },
+  "devDependencies": {
+    "@types/cross-spawn": "6.0.6",
+    "@types/diff": "7.0.2",
+    "@types/hosted-git-info": "3.0.5",
+    "@types/ms": "2.1.0",
+    "@types/node": "24.12.4",
+    "@types/proper-lockfile": "4.1.4",
+    "shx": "0.4.0",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
+  },
+  "keywords": [
+    "coding-agent",
+    "ai",
+    "llm",
+    "cli",
+    "tui",
+    "agent"
+  ],
+  "author": "Mario Zechner",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/earendil-works/pi.git",
+    "directory": "packages/coding-agent"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "private": true
+}

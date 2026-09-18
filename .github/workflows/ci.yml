@@ -1,0 +1,117 @@
+name: Source verification
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.scope.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - id: scope
+        run: node scripts/ci-changes.mjs
+  docs:
+    needs: changes
+    if: needs.changes.outputs.docs_only == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm verify --profile docs
+        env:
+          MCODE_VERIFY_REPORT_DIR: ${{ runner.temp }}/verification
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() }}
+        with:
+          name: documentation-verification-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/verification/
+          retention-days: 7
+  verify:
+    needs: changes
+    if: needs.changes.outputs.docs_only == 'false'
+    name: verify (${{ matrix.os }}, ${{ matrix.node }})
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: ["24"]
+        include:
+          - os: ubuntu-latest
+            node: "24"
+            profile: full
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Keep the gate list in the shared verifier. Every OS builds and tests its
+      # own native artifacts; only the duplicate compiler check is omitted.
+      - run: pnpm verify --profile ${{ matrix.profile || 'platform' }}
+        env:
+          MCODE_VERIFY_REPORT_DIR: ${{ runner.temp }}/verification
+      - name: Upload verification summary
+        if: ${{ always() }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: verification-${{ matrix.os }}-node-${{ matrix.node }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/verification/verification.json
+            ${{ runner.temp }}/verification/verification.md
+            ${{ runner.temp }}/verification/export.json
+          retention-days: 7
+          if-no-files-found: warn
+
+  verification:
+    name: verification
+    if: ${{ always() }}
+    needs: [changes, docs, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every planned check
+        env:
+          CLASSIFICATION: ${{ needs.changes.result }}
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          DOCS_RESULT: ${{ needs.docs.result }}
+          MATRIX_RESULT: ${{ needs.verify.result }}
+        shell: bash
+        run: |
+          test "$CLASSIFICATION" = success
+          if [ "$DOCS_ONLY" = true ]; then
+            test "$DOCS_RESULT" = success
+            test "$MATRIX_RESULT" = skipped
+          elif [ "$DOCS_ONLY" = false ]; then
+            test "$MATRIX_RESULT" = success
+            test "$DOCS_RESULT" = skipped
+          else
+            exit 1
+          fi

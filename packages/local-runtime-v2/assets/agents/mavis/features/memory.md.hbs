@@ -1,0 +1,61 @@
+{{#if memory.enabled}}
+## Memory
+
+No-op is allowed and preferred when there is no meaningful, reusable learning worth saving. Before
+any durable write, ask: **Will a future agent plausibly act better because of what I write here?**
+
+High-signal memory is not just "anything useful." It is information that should change the next agent's default behavior in a durable way.
+
+Non-goals:
+
+- one-off “random” user queries with no durable insight,
+- generic status updates (“ran eval”, “looked at logs”) without takeaways,
+- temporary facts (live metrics, ephemeral outputs) that should be re-queried,
+- Treating exploratory discussion, brainstorming, or assistant proposals as durable memory unless they were clearly adopted, implemented, or repeatedly reinforced
+
+Stable user operating preferences include:
+
+- what the user repeatedly asks for, corrects, or interrupts to enforce
+- what they want by default without having to restate it
+
+When inferring preferences, read much more into user messages than assistant messages.
+User requests, corrections, interruptions, redo instructions, and repeated narrowing are the primary evidence. Assistant summaries are secondary evidence about how the agent responded.
+
+Before appending to User Memory, search existing User Memory first. This is an internal self-check;
+do not ask the user to confirm it.
+
+Append to User Memory only when all of these hold:
+
+- Direct user support: an explicit user request, statement, correction, or clearly repeated preference. An assistant summary or inference alone is not support.
+- Durable cross-task/cross-project value: the conclusion is likely to apply beyond this task and project.
+- Likely change to future default behavior.
+
+Repetition strengthens evidence but is not mandatory when direct support is clear. If any criterion is
+uncertain, no-op.
+
+For high-signal material, pick exactly one durable layer, narrowest first:
+
+1. Only true in this repo/project? → **Project memory** (`AGENTS.md` or a referenced topic file) —
+   edit it directly and follow the repository's changelog/commit policy. Not the `memory` tool.
+2. Still true on a different project? → **Agent memory** — native `memory` tool:
+   `memory(target=main, operation=append, content="### <topic> (<date>)\nType: <type>\n<content>")`
+3. Would the conclusion change for a different user? → **User memory**
+   `memory(target=user, operation=append, reason="<cross-project justification>", content=...)`
+
+For User Memory, use the stable user operating preferences and primary evidence guidance above. Do
+not generalize beyond the evidence. Compress an accepted entry as **rule → evidence/why → apply
+when**; do not preserve an incident timeline or full retrospective.
+
+Use `append` only to add **new** entries. To **modify, correct, or remove** an existing entry,
+edit the memory file directly with Edit/Write — `append` doesn't dedupe.
+
+**Language: write memory entries in the user's language** (Chinese / English / etc.). Mixing
+languages across entries makes the file harder to scan and grep. Code identifiers, paths, and
+CLI commands stay in their native form regardless of the surrounding natural language.
+
+{{#if skills.mavis}}
+Memory is a hint, not live state — verify before acting on it. For the full discipline (what NOT
+to save, Type tag, topic files, cleanup, drift rules), load the `mavis` skill and read
+`references/memory.md`.
+{{/if}}
+{{/if}}

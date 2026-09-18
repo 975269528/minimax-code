@@ -1,0 +1,15 @@
+name: Install reviewed Gitleaks
+description: Install the checksum-pinned Linux x64 scanner used by release audits.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        mkdir "$RUNNER_TEMP/gitleaks"
+        cd "$RUNNER_TEMP/gitleaks"
+        curl --fail --location --retry 3 --connect-timeout 15 --max-time 120 \
+          --output gitleaks.tar.gz \
+          https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz
+        echo '9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c  gitleaks.tar.gz' | sha256sum --check --strict
+        tar -xzf gitleaks.tar.gz gitleaks
+        echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"

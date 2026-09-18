@@ -1,0 +1,1457 @@
+import {
+  defineRuntimeTool,
+  type RuntimeTool,
+  type ToolDefinition,
+  type ToolResult,
+  type ToolResultContent,
+} from '@mavis/agent-core/tools';
+import { Type, type TSchema } from '@sinclair/typebox';
+import { Value } from '@sinclair/typebox/value';
+
+import {
+  LOCAL_BROWSER_ACTION_INPUT_CONTRACTS,
+  LOCAL_BROWSER_ACTION_NAMES,
+  LocalBrowserClickToolDef,
+  LocalBrowserGetDomToolDef,
+  LocalBrowserHoverToolDef,
+  LocalBrowserInspectEditableTargetsToolDef,
+  LocalBrowserInspectToolDef,
+  LocalBrowserNavigateToolDef,
+  LocalBrowserPasteToolDef,
+  LocalBrowserPressKeyToolDef,
+  LocalBrowserScreenshotToolDef,
+  LocalBrowserScrollToolDef,
+  LocalBrowserToolDef,
+  LocalBrowserTypeToolDef,
+  LocalBrowserVerifyTextToolDef,
+  LocalBrowserWaitForToolDef,
+} from './builtin-browser-defs.js';
+import type {
+  LocalBrowserAdapter,
+  LocalBrowserSkillSessionStore,
+  LocalBrowserToolAction,
+  LocalRuntimeTool,
+  LocalRuntimeToolContext,
+} from './types.js';
+
+export const CONTROL_IN_APP_BROWSER_SKILL_NAME = 'control-in-app-browser';
+const SCREENSHOT_DELIVERY_INSTRUCTION =
+  'This screenshot is model-visible inspection evidence and is not shown to the user by default. Do not proactively claim it was sent, shared, shown, or attached, and do not emit its delivery markup unless the user explicitly asks to see or receive this screenshot. When explicitly requested, emit userDelivery.mediaMarkup exactly once if userDelivery.available is true. Never expose Base64 or a data URL, and never fabricate a path or markup when delivery is unavailable.';
+const COMPACT_HOVER_SEMANTIC_SOURCES = new Set([
+  'aria-label',
+  'aria-labelledby',
+  'title',
+  'svg-title',
+  'alt',
+  'target-text',
+  'aria-describedby',
+  'hover-tooltip',
+  'hover-overlay',
+  'none',
+]);
+const COMPACT_HOVER_CONFIDENCE_LEVELS = new Set(['high', 'medium', 'low']);
+// A hidden long action can spend 125s in the render queue and 125s executing.
+// Keep one end-to-end tool budget for both bounded phases plus result delivery
+// and cleanup. Nested deadlines consume this budget; they do not add to it.
+const LOCAL_BROWSER_TOOL_TIMEOUT_MS = 275_000;
+const POST_ACTION_VISUAL_TIMEOUT_MS = 5_000;
+const COMPACT_INSPECT_CONTINUATION_INSTRUCTION =
+  'For truncated inspect results, continue with the returned continuation input; do not invent snapshot IDs or offsets.';
+
+class BrowserOperationTimeoutError extends Error {
+  readonly code = 'BROWSER_OPERATION_TIMEOUT';
+  readonly label: string;
+  readonly timeoutMs: number;
+
+  constructor(label: string, timeoutMs: number) {
+    super(`BROWSER_OPERATION_TIMEOUT: Operation "${label}" exceeded ${timeoutMs}ms`);
+    this.name = 'BrowserOperationTimeoutError';
+    this.label = label;
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+async function executeWithDeadline<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  timeoutLabel: string,
+  externalSignal?: AbortSignal,
+): Promise<T> {
+  const controller = new AbortController();
+  let rejectExternalAbort: ((error: Error) => void) | undefined;
+  const externalAbortPromise = new Promise<never>((_resolve, reject) => {
+    rejectExternalAbort = reject;
+  });
+  const onExternalAbort = () => {
+    const error = Object.assign(new Error('Operation aborted'), { code: 'ABORTED' });
+    rejectExternalAbort?.(error);
+    controller.abort(error);
+  };
+  if (externalSignal?.aborted) {
+    onExternalAbort();
+    return externalAbortPromise;
+  }
+  externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = new BrowserOperationTimeoutError(timeoutLabel, timeoutMs);
+      reject(error);
+      controller.abort(error);
+    }, timeoutMs);
+    timer.unref?.();
+  });
+
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => operation(controller.signal)),
+      timeoutPromise,
+      externalAbortPromise,
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    externalSignal?.removeEventListener('abort', onExternalAbort);
+  }
+}
+
+export type LocalBrowserToolExposure = 'compact' | 'full' | 'both';
+
+export type LocalBrowserScreenshotPreprocessor = (
+  result: unknown,
+  ctx: LocalRuntimeToolContext,
+  signal?: AbortSignal,
+  options?: {
+    purpose: 'post-action';
+    action: LocalBrowserToolAction;
+  },
+) => Promise<unknown>;
+
+export interface LocalBrowserRuntimeToolOptions {
+  exposure?: LocalBrowserToolExposure;
+  preprocessScreenshot?: LocalBrowserScreenshotPreprocessor;
+  browserSkillSessionStore?: LocalBrowserSkillSessionStore;
+}
+
+interface BrowserRuntimeInternalOptions extends LocalBrowserRuntimeToolOptions {
+  postActionVisualCountByTurn: Map<string, number>;
+  interactiveTakeover: boolean;
+  providerNavigationGuidance: string;
+}
+
+export function buildLocalBrowserRuntimeTools(
+  adapter: LocalBrowserAdapter,
+  options: LocalBrowserRuntimeToolOptions = {},
+): LocalRuntimeTool[] {
+  const capabilities = adapter.getCapabilities?.();
+  const runtimeOptions: BrowserRuntimeInternalOptions = {
+    ...options,
+    postActionVisualCountByTurn: new Map(),
+    interactiveTakeover: capabilities?.interactiveTakeover !== false,
+    providerNavigationGuidance: browserProviderNavigationGuidance(capabilities?.provider),
+  };
+  const exposure = options.exposure ?? 'compact';
+  const declaredActions = capabilities?.actions;
+  const compactActions = (
+    declaredActions ??
+    (Object.keys(LOCAL_BROWSER_ACTION_INPUT_CONTRACTS) as LocalBrowserToolAction[])
+  ).filter((action) => action in LOCAL_BROWSER_ACTION_INPUT_CONTRACTS);
+  const tools: LocalRuntimeTool[] = [];
+  if ((exposure === 'compact' || exposure === 'both') && compactActions.length > 0) {
+    tools.push(createBrowserCompactRuntimeTool(adapter, runtimeOptions, compactActions));
+  }
+  if (exposure === 'full' || exposure === 'both') {
+    tools.push(...buildDetailedBrowserRuntimeTools(adapter, runtimeOptions, declaredActions));
+  }
+  return tools;
+}
+
+/** Builds the exact compact Browser input contract disclosed by a Host Binding. */
+export function describeLocalBrowserToolInput(target: RuntimeTool): TSchema {
+  const actions: unknown = target.def.schema.properties?.action?.enum;
+  const allowed = new Set(Array.isArray(actions) ? actions : []);
+  return Type.Union(
+    Object.entries(LOCAL_BROWSER_ACTION_INPUT_CONTRACTS)
+      .filter(([action]) => allowed.has(action))
+      .map(([action, contract]) =>
+        Type.Object(
+          {
+            action: Type.Literal(action),
+            input: contract.optional ? Type.Optional(contract.schema) : contract.schema,
+          },
+          { additionalProperties: false },
+        ),
+      ),
+  );
+}
+
+function buildDetailedBrowserRuntimeTools(
+  adapter: LocalBrowserAdapter,
+  options: BrowserRuntimeInternalOptions,
+  availableActions?: readonly LocalBrowserToolAction[],
+): LocalRuntimeTool[] {
+  const tools: Array<{ action: LocalBrowserToolAction; tool: LocalRuntimeTool }> = [
+    {
+      action: 'inspect',
+      tool: createBrowserRuntimeTool(LocalBrowserInspectToolDef, 'inspect', adapter, options),
+    },
+    {
+      action: 'navigate',
+      tool: createBrowserRuntimeTool(LocalBrowserNavigateToolDef, 'navigate', adapter, options),
+    },
+    {
+      action: 'click',
+      tool: createBrowserRuntimeTool(LocalBrowserClickToolDef, 'click', adapter, options),
+    },
+    {
+      action: 'type',
+      tool: createBrowserRuntimeTool(LocalBrowserTypeToolDef, 'type', adapter, options),
+    },
+    {
+      action: 'press_key',
+      tool: createBrowserRuntimeTool(LocalBrowserPressKeyToolDef, 'press_key', adapter, options),
+    },
+    {
+      action: 'scroll',
+      tool: createBrowserRuntimeTool(LocalBrowserScrollToolDef, 'scroll', adapter, options),
+    },
+    {
+      action: 'hover',
+      tool: createBrowserRuntimeTool(LocalBrowserHoverToolDef, 'hover', adapter, options),
+    },
+    {
+      action: 'wait_for',
+      tool: createBrowserRuntimeTool(LocalBrowserWaitForToolDef, 'wait_for', adapter, options),
+    },
+    {
+      action: 'get_dom',
+      tool: createBrowserRuntimeTool(LocalBrowserGetDomToolDef, 'get_dom', adapter, options),
+    },
+    {
+      action: 'screenshot',
+      tool: createBrowserRuntimeTool(LocalBrowserScreenshotToolDef, 'screenshot', adapter, options),
+    },
+    {
+      action: 'paste',
+      tool: createBrowserRuntimeTool(LocalBrowserPasteToolDef, 'paste', adapter, options),
+    },
+    {
+      action: 'verify_text',
+      tool: createBrowserRuntimeTool(
+        LocalBrowserVerifyTextToolDef,
+        'verify_text',
+        adapter,
+        options,
+      ),
+    },
+    {
+      action: 'inspect_editable_targets',
+      tool: createBrowserRuntimeTool(
+        LocalBrowserInspectEditableTargetsToolDef,
+        'inspect_editable_targets',
+        adapter,
+        options,
+      ),
+    },
+  ];
+  const allowed = availableActions ? new Set(availableActions) : undefined;
+  return tools.filter(({ action }) => !allowed || allowed.has(action)).map(({ tool }) => tool);
+}
+
+function createBrowserCompactRuntimeTool(
+  adapter: LocalBrowserAdapter,
+  options: BrowserRuntimeInternalOptions,
+  availableActions: readonly LocalBrowserToolAction[],
+): LocalRuntimeTool {
+  const actions = availableActions;
+  const compactActions = actions.filter((action) =>
+    (LOCAL_BROWSER_ACTION_NAMES as readonly string[]).includes(action),
+  );
+  const actionSchema = Type.String({
+    enum: compactActions,
+    pattern: `^(?:${compactActions.join('|')})$`,
+  });
+  const def = {
+    ...LocalBrowserToolDef,
+    description: `${LocalBrowserToolDef.description} ${options.providerNavigationGuidance} ${COMPACT_INSPECT_CONTINUATION_INSTRUCTION} Available actions for this turn: ${actions.join(', ')}.`,
+    schema: Type.Object(
+      {
+        action: actionSchema,
+        input: LocalBrowserToolDef.schema.properties.input,
+      },
+      {
+        additionalProperties: false,
+        description: LocalBrowserToolDef.schema.description,
+      },
+    ),
+  };
+  const actionSet = new Set<LocalBrowserToolAction>(actions);
+  return defineRuntimeTool<typeof def.schema, LocalRuntimeToolContext>({
+    ...def,
+    async execute(ctx, input, signal) {
+      const action = input.action as LocalBrowserToolAction;
+      if (!actionSet.has(action)) {
+        return browserToolError(
+          LocalBrowserToolDef.name,
+          action,
+          `Browser action "${action}" is not available from the current provider.`,
+          'capability_unavailable',
+        );
+      }
+      const contract =
+        LOCAL_BROWSER_ACTION_INPUT_CONTRACTS[
+          action as keyof typeof LOCAL_BROWSER_ACTION_INPUT_CONTRACTS
+        ];
+      if (input.input === undefined && !contract.optional) {
+        return browserToolError(
+          LocalBrowserToolDef.name,
+          action,
+          `Missing input for browser action "${action}".`,
+          'invalid_input',
+        );
+      }
+
+      const rawInput = input.input ?? {};
+      if (!Value.Check(contract.schema, rawInput)) {
+        return browserToolError(
+          LocalBrowserToolDef.name,
+          action,
+          `Input does not match the contract for browser action "${action}".`,
+          'invalid_input',
+        );
+      }
+
+      const validatedInput = rawInput as Record<string, unknown>;
+      const semanticError = validateCompactBrowserInput(action, validatedInput);
+      if (semanticError) {
+        return browserToolError(LocalBrowserToolDef.name, action, semanticError, 'invalid_input');
+      }
+
+      return executeBrowserAction(
+        LocalBrowserToolDef.name,
+        action,
+        adapter,
+        ctx,
+        validatedInput,
+        signal,
+        'compact',
+        options.preprocessScreenshot,
+        options.browserSkillSessionStore,
+        options.postActionVisualCountByTurn,
+        options.interactiveTakeover,
+      );
+    },
+  });
+}
+
+function createBrowserRuntimeTool<S extends TSchema>(
+  def: ToolDefinition<S>,
+  action: LocalBrowserToolAction,
+  adapter: LocalBrowserAdapter,
+  options: BrowserRuntimeInternalOptions,
+): LocalRuntimeTool {
+  return defineRuntimeTool<S, LocalRuntimeToolContext>({
+    ...def,
+    ...(action === 'navigate'
+      ? { description: `${def.description} ${options.providerNavigationGuidance}` }
+      : {}),
+    async execute(ctx, input, signal) {
+      return executeBrowserAction(
+        def.name,
+        action,
+        adapter,
+        ctx,
+        input,
+        signal,
+        'full',
+        options.preprocessScreenshot,
+        options.browserSkillSessionStore,
+        options.postActionVisualCountByTurn,
+        options.interactiveTakeover,
+      );
+    },
+  });
+}
+
+function browserProviderNavigationGuidance(provider: string | undefined): string {
+  if (provider === 'electron-file-panel') {
+    return 'Active Browser provider: electron-file-panel. Use navigate only when the current FilePanel tab is absent or blank. A loaded FilePanel tab is user-visible, so use open_tab by default to preserve it. Use navigate with replaceCurrentTab: true only when the user explicitly asks to replace the current tab; omitting the flag on a loaded tab fails closed, and you must not add it merely to recover from choosing navigate incorrectly.';
+  }
+  if (provider === 'native-headless-chrome') {
+    return 'Active Browser provider: native-headless-chrome. Use fully qualified absolute HTTP(S) URLs. Use navigate to replace the current headless working page by default. Use open_tab only when the user explicitly requests another tab or the task requires preserving the current page.';
+  }
+  return 'Follow the active Browser provider navigation policy when choosing between navigate and open_tab.';
+}
+
+type BrowserResultExposure = 'compact' | 'full';
+
+async function executeBrowserAction(
+  toolName: string,
+  action: LocalBrowserToolAction,
+  adapter: LocalBrowserAdapter,
+  ctx: LocalRuntimeToolContext,
+  input: unknown,
+  signal?: AbortSignal,
+  exposure: BrowserResultExposure = 'full',
+  preprocessScreenshot?: LocalBrowserScreenshotPreprocessor,
+  browserSkillSessionStore?: LocalBrowserSkillSessionStore,
+  postActionVisualCountByTurn?: Map<string, number>,
+  interactiveTakeover = true,
+): Promise<ToolResult> {
+  try {
+    return await executeWithDeadline(
+      async (operationSignal) => {
+        // A supplied session store is authoritative because committed history
+        // replacement clears it while the current turn's loadedSkills Set survives.
+        const browserSkillLoaded = browserSkillSessionStore
+          ? browserSkillSessionStore.hasLoaded(ctx.sessionId)
+          : !ctx.loadedSkills || ctx.loadedSkills.has(CONTROL_IN_APP_BROWSER_SKILL_NAME);
+        if (!browserSkillLoaded) {
+          const requiredSkillName =
+            browserSkillSessionStore?.requiredSkillName ?? CONTROL_IN_APP_BROWSER_SKILL_NAME;
+          return browserToolError(
+            toolName,
+            action,
+            `Load the current complete ${requiredSkillName} skill before using Browser. Re-read it if the installed Skill has changed.`,
+            'SKILL_REQUIRED',
+          );
+        }
+
+        const rawInput = isRecord(input) ? input : {};
+        const rawResult = await Promise.resolve(
+          adapter.execute(ctx, action, rawInput, operationSignal),
+        );
+        const result =
+          action === 'screenshot' && preprocessScreenshot
+            ? await preprocessScreenshot(rawResult, ctx, operationSignal)
+            : rawResult;
+        const postActionVisual =
+          action === 'screenshot'
+            ? undefined
+            : await capturePostActionVisual(
+                action,
+                rawInput,
+                rawResult,
+                adapter,
+                ctx,
+                operationSignal,
+                preprocessScreenshot,
+                postActionVisualCountByTurn,
+              );
+        return browserToolResult(
+          toolName,
+          action,
+          result,
+          exposure,
+          postActionVisual,
+          interactiveTakeover,
+        );
+      },
+      LOCAL_BROWSER_TOOL_TIMEOUT_MS,
+      'Local Browser tool',
+      signal,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const errorCode =
+      isRecord(error) &&
+      typeof error.code === 'string' &&
+      /^[A-Za-z][A-Za-z0-9_]*$/u.test(error.code)
+        ? error.code
+        : undefined;
+    const normalizedErrorCode =
+      errorCode === 'aborted'
+        ? 'ABORTED'
+        : errorCode === 'browser_operation_timeout' ||
+            errorCode === 'background_render_operation_timeout' ||
+            errorCode === 'background_render_queue_timeout'
+          ? 'BROWSER_OPERATION_TIMEOUT'
+          : errorCode;
+    const structuredCode = normalizedErrorCode ?? /^([A-Z][A-Z0-9_]+):/u.exec(message)?.[1];
+    const label =
+      isRecord(error) && typeof error.label === 'string'
+        ? error.label.trim().slice(0, 200)
+        : undefined;
+    const timeoutMs =
+      isRecord(error) &&
+      typeof error.timeoutMs === 'number' &&
+      Number.isFinite(error.timeoutMs) &&
+      error.timeoutMs > 0
+        ? error.timeoutMs
+        : undefined;
+    const brokerCode =
+      isRecord(error) &&
+      typeof error.brokerCode === 'string' &&
+      /^[a-z][a-z0-9_]*$/u.test(error.brokerCode)
+        ? error.brokerCode
+        : undefined;
+    return browserToolError(toolName, action, message, structuredCode ?? 'execution_failed', {
+      ...(label ? { label } : {}),
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      ...(brokerCode ? { brokerCode } : {}),
+    });
+  }
+}
+
+function browserToolError(
+  toolName: string,
+  action: LocalBrowserToolAction,
+  message: string,
+  code: string,
+  metadata: { label?: string; timeoutMs?: number; brokerCode?: string } = {},
+): ToolResult {
+  const text = `<browser_error action="${action}" code="${code}">${message}</browser_error>`;
+  return {
+    tool_name: toolName,
+    text,
+    content: [{ type: 'text', text }],
+    details: { action, ok: false, code, error: message, ...metadata },
+    isError: true,
+  };
+}
+
+function browserToolResult(
+  toolName: string,
+  action: LocalBrowserToolAction,
+  result: unknown,
+  exposure: BrowserResultExposure,
+  postActionVisual?: PostActionVisualCapture,
+  interactiveTakeover = true,
+): ToolResult {
+  const screenshot = screenshotContent(result);
+  const postActionScreenshot = screenshotContent(postActionVisual?.result);
+  let sanitized =
+    action === 'screenshot'
+      ? summarizeScreenshotResult(result, screenshot !== undefined)
+      : exposure === 'compact' && action !== 'inspect' && action !== 'query'
+        ? summarizeCompactActionResult(action, result)
+        : exposure === 'compact'
+          ? sanitizeBrowserResult(result, COMPACT_PRIVATE_RESULT_KEYS)
+          : sanitizeBrowserResult(result);
+  if (exposure === 'compact') sanitized = appendBrowserReadingGuidance(action, sanitized);
+  sanitized = appendBrowserSafetyGuidance(action, sanitized, interactiveTakeover);
+  if (postActionVisual && (postActionScreenshot || isDeduplicatedVisual(postActionVisual.result))) {
+    sanitized = appendPostActionVisualSummary(action, sanitized, postActionVisual);
+  }
+  let text = JSON.stringify({ action, result: sanitized }, null, 2);
+  let resultTooLarge = false;
+  if (exposure === 'compact' && Buffer.byteLength(text, 'utf8') > MAX_COMPACT_BROWSER_TEXT_BYTES) {
+    sanitized = compactOversizedInspectResult(action, sanitized);
+    sanitized = appendBrowserReadingGuidance(action, sanitized);
+    text = JSON.stringify({ action, result: sanitized }, null, 2);
+  }
+  if (exposure === 'compact' && Buffer.byteLength(text, 'utf8') > MAX_COMPACT_BROWSER_TEXT_BYTES) {
+    const safety = readAuthenticationTakeoverSafety(sanitized);
+    sanitized = {
+      success: false,
+      code: 'BROWSER_RESULT_TOO_LARGE',
+      message: 'Browser result exceeded the compact 64 KiB budget. Narrow the request and retry.',
+      ...(safety ? { safety } : {}),
+    };
+    text = JSON.stringify({ action, result: sanitized }, null, 2);
+    resultTooLarge = true;
+  }
+  const content: ToolResultContent[] = [{ type: 'text', text }];
+  if (screenshot) content.push(screenshot);
+  if (postActionScreenshot) content.push(postActionScreenshot);
+
+  const isError = resultTooLarge || (isRecord(sanitized) && sanitized.success === false);
+  return {
+    tool_name: toolName,
+    text,
+    content,
+    details: {
+      action,
+      result: sanitized,
+    },
+    ...(isError ? { isError: true } : {}),
+  };
+}
+
+interface PostActionVisualRequest extends Record<string, unknown> {
+  scope: 'viewport' | 'clip';
+  clip?: { x: number; y: number; width: number; height: number };
+  // Set only when a target-framed capture was wanted but could not be built, so
+  // `scope: 'viewport'` here means "your target could not be framed" rather than
+  // "this action is inherently full-viewport". Internal to the summary the model
+  // reads; it is never part of the screenshot payload.
+  framing?: 'target-unframeable';
+  // Human-readable rejection carrying the rejected numbers and the rule; feeds
+  // the instruction the model reads. Same summary-only scope as `framing`.
+  framingReason?: string;
+}
+
+interface PostActionVisualCapture {
+  request: PostActionVisualRequest;
+  result: unknown;
+}
+
+const POST_ACTION_VISUAL_PADDING_PX = 48;
+const POST_ACTION_VISUAL_MAX_CLIP_EDGE_PX = 4_096;
+// Smallest clip we are willing to ask the provider for. Model gateways reject
+// degenerate images outright (the production MiniMax-M3 gateway answers
+// `invalid params, 410 (2013)` for a short edge of 2px), and a rejected image
+// persisted into session history poisons every later request in that session.
+// The rejection threshold is a server-side property that can move — measured at
+// <=2px on the production gateway and <=4px on the open-platform test gateway —
+// so this value deliberately sits far away from either red line rather than one
+// pixel above it. 32px is affordable here because we fully control this clip and
+// a sub-32px sliver carries no information for the model anyway; the safe
+// fallback is a full-viewport capture, not a lost observation. The outbound
+// last-resort net in agent-core uses a much tighter value for the opposite
+// reason — see MIN_PROVIDER_IMAGE_EDGE_PX.
+const POST_ACTION_VISUAL_MIN_CLIP_EDGE_PX = 32;
+const MAX_POST_ACTION_VISUALS_PER_TURN = 4;
+const MAX_TRACKED_POST_ACTION_VISUAL_TURNS = 128;
+
+async function capturePostActionVisual(
+  action: LocalBrowserToolAction,
+  input: Record<string, unknown>,
+  result: unknown,
+  adapter: LocalBrowserAdapter,
+  ctx: LocalRuntimeToolContext,
+  signal: AbortSignal | undefined,
+  preprocessScreenshot: LocalBrowserScreenshotPreprocessor | undefined,
+  postActionVisualCountByTurn: Map<string, number> | undefined,
+): Promise<PostActionVisualCapture | undefined> {
+  if (!preprocessScreenshot || process.env.MAVIS_BROWSER_POST_ACTION_VISUAL_V1 === '0') {
+    return undefined;
+  }
+  const capabilities = adapter.getCapabilities?.();
+  if (capabilities && !capabilities.actions.includes('screenshot')) return undefined;
+  const budgetKey = `${ctx.sessionId}:${ctx.turnId}`;
+  if ((postActionVisualCountByTurn?.get(budgetKey) ?? 0) >= MAX_POST_ACTION_VISUALS_PER_TURN) {
+    return undefined;
+  }
+  const request = resolvePostActionVisualRequest(action, input, result);
+  if (!request) return undefined;
+
+  try {
+    return await executeWithDeadline(
+      async (visualSignal) => {
+        const rawScreenshot = await adapter.execute(
+          ctx,
+          'screenshot',
+          screenshotRequestPayload(request),
+          visualSignal,
+        );
+        const processed = await preprocessScreenshot(rawScreenshot, ctx, visualSignal, {
+          purpose: 'post-action',
+          action,
+        });
+        if (!screenshotContent(processed)) {
+          return isDeduplicatedVisual(processed) ? { request, result: processed } : undefined;
+        }
+        if (postActionVisualCountByTurn) {
+          recordPostActionVisual(postActionVisualCountByTurn, budgetKey);
+        }
+        return { request, result: processed };
+      },
+      POST_ACTION_VISUAL_TIMEOUT_MS,
+      'Browser post-action visual',
+      signal,
+    );
+  } catch {
+    // Visual evidence is supplemental. A capture/compression failure must not
+    // replace the Browser action's authoritative success or failure result.
+    return undefined;
+  }
+}
+
+/**
+ * Narrow the internal request down to the fields the screenshot action accepts.
+ *
+ * Built as an allow-list rather than by omitting `framing`, so any future
+ * summary-only field also stays out of the provider payload by default.
+ */
+function screenshotRequestPayload(request: PostActionVisualRequest): Record<string, unknown> {
+  return request.clip === undefined
+    ? { scope: request.scope }
+    : { scope: request.scope, clip: request.clip };
+}
+
+function recordPostActionVisual(countByTurn: Map<string, number>, budgetKey: string): void {
+  countByTurn.set(budgetKey, (countByTurn.get(budgetKey) ?? 0) + 1);
+  while (countByTurn.size > MAX_TRACKED_POST_ACTION_VISUAL_TURNS) {
+    const oldestKey = countByTurn.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    countByTurn.delete(oldestKey);
+  }
+}
+
+function resolvePostActionVisualRequest(
+  action: LocalBrowserToolAction,
+  input: Record<string, unknown>,
+  result: unknown,
+): PostActionVisualRequest | undefined {
+  if (!isRecord(result)) return undefined;
+  const navigation = isRecord(result.navigation) ? result.navigation : {};
+  if (result.success === false && navigation.detected !== true) return undefined;
+  if (navigation.detected === true) return { scope: 'viewport' };
+
+  switch (action) {
+    case 'navigate':
+    case 'open_tab':
+    case 'back':
+    case 'forward':
+    case 'reload':
+    case 'click_and_wait_for_navigation':
+    case 'drag':
+    case 'upload_files':
+      return { scope: 'viewport' };
+    case 'click':
+    case 'double_click':
+    case 'check':
+    case 'uncheck':
+    case 'select_option':
+      return requestForTarget(result.target);
+    case 'scroll':
+      return isRecord(result.effect) && result.effect.moved === true
+        ? { scope: 'viewport' }
+        : undefined;
+    case 'hover': {
+      const effect = isRecord(result.effect) ? result.effect : {};
+      const semantic = isRecord(effect.semantic) ? effect.semantic : {};
+      return effect.tooltipObserved === true && semantic.confidence !== 'high'
+        ? requestForTarget(result.target)
+        : undefined;
+    }
+    case 'fill':
+    case 'type': {
+      const target = isRecord(result.target) ? result.target : {};
+      return target.virtual === true || target.contentEditable === true
+        ? requestForTarget(target)
+        : undefined;
+    }
+    case 'press_key': {
+      const key = typeof input.key === 'string' ? input.key.toLowerCase() : '';
+      return key === 'enter' ? { scope: 'viewport' } : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
+function requestForTarget(value: unknown): PostActionVisualRequest {
+  const target = isRecord(value) ? value : {};
+  const framing = resolveVisualRect(target.rect);
+  // The fallback is silent framing loss: the model asked for the area around its
+  // target and gets the whole viewport, which may not contain that target at
+  // all. Carry the rejected numbers and the rule so the instruction can state
+  // them instead of a bare marker.
+  return 'rect' in framing
+    ? { scope: 'clip', clip: framing.rect }
+    : { scope: 'viewport', framing: 'target-unframeable', framingReason: framing.rejected };
+}
+
+type VisualRectDecision =
+  | { rect: { x: number; y: number; width: number; height: number } }
+  | { rejected: string };
+
+function resolveVisualRect(value: unknown): VisualRectDecision {
+  if (!isRecord(value)) return { rejected: 'Target rect was missing, so no clip could be built.' };
+  const x = finiteNumber(value.x);
+  const y = finiteNumber(value.y);
+  const width = finiteNumber(value.width);
+  const height = finiteNumber(value.height);
+  if (x === undefined || y === undefined || width === undefined || height === undefined) {
+    return { rejected: 'Target rect had non-numeric fields, so no clip could be built.' };
+  }
+  if (width <= 0 || height <= 0) {
+    return {
+      rejected: `Target rect was ${Math.round(width)}x${Math.round(height)} px (empty), so no clip could be built.`,
+    };
+  }
+  const left = Math.max(0, Math.floor(x - POST_ACTION_VISUAL_PADDING_PX));
+  const top = Math.max(0, Math.floor(y - POST_ACTION_VISUAL_PADDING_PX));
+  const right = Math.ceil(x + width + POST_ACTION_VISUAL_PADDING_PX);
+  const bottom = Math.ceil(y + height + POST_ACTION_VISUAL_PADDING_PX);
+  // Clamping the top-left to the viewport origin without clamping the
+  // bottom-right can collapse an off-screen element into a degenerate strip.
+  // Check the resulting edges before constructing the rect so this function is
+  // structurally incapable of returning one; a rejection routes the caller to
+  // its existing full-viewport fallback.
+  const clippedWidth = Math.min(POST_ACTION_VISUAL_MAX_CLIP_EDGE_PX, right - left);
+  const clippedHeight = Math.min(POST_ACTION_VISUAL_MAX_CLIP_EDGE_PX, bottom - top);
+  if (
+    clippedWidth < POST_ACTION_VISUAL_MIN_CLIP_EDGE_PX ||
+    clippedHeight < POST_ACTION_VISUAL_MIN_CLIP_EDGE_PX
+  ) {
+    return {
+      rejected:
+        `Target clip ${Math.max(0, clippedWidth)}x${Math.max(0, clippedHeight)} px was rejected: ` +
+        `minimum edge is ${POST_ACTION_VISUAL_MIN_CLIP_EDGE_PX} px ` +
+        `(target rect x=${Math.round(x)}, y=${Math.round(y)}).`,
+    };
+  }
+  return { rect: { x: left, y: top, width: clippedWidth, height: clippedHeight } };
+}
+
+function unframeableInstruction(action: LocalBrowserToolAction, reason: string): string {
+  return `${reason} This full-viewport image may not contain the target; trust the action fields, not the image. Next: ${unframeableNextStep(action)}, or inspect again then screenshot.`;
+}
+
+/**
+ * The verification step that actually observes what this action changes.
+ * Text queries cannot see a checkbox's checked state or a select's value, and
+ * editable targets have a dedicated query; naming the wrong probe sends the
+ * model on a detour.
+ */
+function unframeableNextStep(action: LocalBrowserToolAction): string {
+  switch (action) {
+    case 'check':
+    case 'uncheck':
+    case 'select_option':
+      return 'inspect to read the element state';
+    case 'fill':
+    case 'type':
+      return 'query kind "editable"';
+    default:
+      return 'verify_text or query kind "text"';
+  }
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function appendPostActionVisualSummary(
+  action: LocalBrowserToolAction,
+  result: unknown,
+  capture: PostActionVisualCapture,
+): unknown {
+  if (!isRecord(result) || !isRecord(capture.result)) return result;
+  if (isDeduplicatedVisual(capture.result)) {
+    return {
+      ...result,
+      visualObservation: {
+        available: false,
+        source: 'post-action',
+        action,
+        scope: capture.request.scope,
+        ...(capture.request.framing === undefined ? {} : { framing: capture.request.framing }),
+        deduplicated: true,
+        budget: { maxImagesPerTurn: MAX_POST_ACTION_VISUALS_PER_TURN },
+        verificationOnly: true,
+        instruction: 'The post-action image matched the previous visual and was not re-added.',
+      },
+    };
+  }
+  const width = finiteNumber(capture.result.width);
+  const height = finiteNumber(capture.result.height);
+  const bytes = finiteNumber(capture.result.bytes);
+  const format =
+    capture.result.format === 'jpeg' || capture.result.format === 'jpg' ? 'jpeg' : 'png';
+  return {
+    ...result,
+    visualObservation: {
+      available: true,
+      source: 'post-action',
+      action,
+      scope: capture.request.scope,
+      ...(capture.request.framing === undefined ? {} : { framing: capture.request.framing }),
+      ...(capture.request.framingReason === undefined
+        ? {}
+        : { framingReason: capture.request.framingReason }),
+      format,
+      ...(width === undefined ? {} : { width }),
+      ...(height === undefined ? {} : { height }),
+      ...(bytes === undefined ? {} : { bytes }),
+      budget: {
+        ...(isRecord(capture.result.visualBudget) ? capture.result.visualBudget : {}),
+        maxImagesPerTurn: MAX_POST_ACTION_VISUALS_PER_TURN,
+      },
+      verificationOnly: true,
+      instruction:
+        capture.request.framing === 'target-unframeable'
+          ? unframeableInstruction(
+              action,
+              capture.request.framingReason ?? 'The target could not be framed.',
+            )
+          : 'Use this image as supplemental visual evidence. It does not change the Browser action success result.',
+    },
+  };
+}
+
+function isDeduplicatedVisual(value: unknown): boolean {
+  return isRecord(value) && value.deduplicated === true;
+}
+
+const MAX_COMPACT_BROWSER_TEXT_BYTES = 64 * 1024;
+
+function compactOversizedInspectResult(action: LocalBrowserToolAction, value: unknown): unknown {
+  if (action !== 'inspect' || !isRecord(value) || typeof value.snapshotId !== 'string') {
+    return value;
+  }
+  const envelope = { ...value };
+  const rawElements = envelope.elements;
+  const hadSemanticTree = Object.prototype.hasOwnProperty.call(envelope, 'semanticTree');
+  const semanticTree = envelope.semanticTree;
+  delete envelope.semanticTree;
+  delete envelope.reading;
+  delete envelope.elements;
+  const compactElements = Array.isArray(rawElements)
+    ? rawElements.map((item) => {
+        if (!isRecord(item)) return item;
+        const compact = { ...item };
+        delete compact.attributes;
+        delete compact.selector;
+        return compact;
+      })
+    : rawElements;
+  const compactWithSemanticTree = {
+    ...envelope,
+    elements: compactElements,
+    ...(hadSemanticTree ? { semanticTree } : {}),
+  };
+  if (
+    Buffer.byteLength(JSON.stringify({ action, result: compactWithSemanticTree }), 'utf8') <=
+    MAX_COMPACT_BROWSER_TEXT_BYTES
+  ) {
+    return compactWithSemanticTree;
+  }
+  const withoutSemanticTree = {
+    ...envelope,
+    elements: rawElements,
+    ...(hadSemanticTree ? { semanticTreeOmitted: { reason: 'result_budget' } } : {}),
+  };
+  if (
+    Buffer.byteLength(JSON.stringify({ action, result: withoutSemanticTree }), 'utf8') <=
+    MAX_COMPACT_BROWSER_TEXT_BYTES
+  ) {
+    return withoutSemanticTree;
+  }
+  return {
+    ...envelope,
+    elements: compactElements,
+    ...(hadSemanticTree ? { semanticTreeOmitted: { reason: 'result_budget' } } : {}),
+  };
+}
+
+const COMPACT_STATUS_STRING_LIMITS = {
+  url: 4_096,
+  title: 1_024,
+  error: 4_096,
+  message: 4_096,
+  code: 256,
+} as const;
+const COMPACT_PRIVATE_RESULT_KEYS = new Set(['browserState', 'sessionId', 'tabId']);
+
+function appendBrowserReadingGuidance(action: LocalBrowserToolAction, result: unknown): unknown {
+  if (action !== 'inspect' || !isRecord(result) || !Array.isArray(result.elements)) return result;
+
+  return typeof result.truncated === 'boolean'
+    ? {
+        ...result,
+        reading: result.truncated
+          ? {
+              snapshotComplete: false,
+              ifRequestedEvidencePresent: 'stop',
+              requiredNextAction: 'inspect',
+              requiredNextInput: isRecord(result.continuation)
+                ? result.continuation.input
+                : undefined,
+              instruction:
+                'If the requested evidence is already present, stop reading. Otherwise continue with the returned inspect continuation input; do not invent snapshot IDs or offsets.',
+            }
+          : {
+              snapshotComplete: true,
+              ifRequestedEvidencePresent: 'stop',
+              instruction:
+                'If the requested evidence is present in this complete snapshot, do not call query, inspect, or screenshot again; answer now.',
+            },
+      }
+    : result;
+}
+
+const AUTHENTICATION_TAKEOVER_SAFETY = {
+  classification: 'authentication_user_takeover',
+  mutationAllowed: false,
+  requiredNextTool: 'ask_user',
+  instruction:
+    'Call the actual ask_user tool call now so the user can take over this same Browser tab. Do not write <ask_user>, ask_user(...), or a prose placeholder; text does not pause the turn.',
+} as const;
+
+const INTERACTIVE_AUTH_REQUIRED_SAFETY = {
+  classification: 'interactive_auth_required',
+  mutationAllowed: false,
+  terminal: true,
+  instruction:
+    'Stop Browser automation. This headless provider has no visible surface for password or verification-code entry.',
+} as const;
+
+function appendBrowserSafetyGuidance(
+  action: LocalBrowserToolAction,
+  result: unknown,
+  interactiveTakeover: boolean,
+): unknown {
+  if (!isRecord(result)) return result;
+  const elements =
+    action === 'inspect'
+      ? [result.elements]
+      : action === 'query'
+        ? [result.elements, result.targets]
+        : action === 'inspect_editable_targets'
+          ? [result.targets]
+          : [];
+  const containsAuthenticationSecretField =
+    elements.some(
+      (collection) => Array.isArray(collection) && collection.some(isAuthenticationSecretField),
+    ) ||
+    ((action === 'query' || action === 'get_dom') &&
+      typeof result.html === 'string' &&
+      containsAuthenticationSecretMarkup(result.html));
+  if (!containsAuthenticationSecretField) return result;
+
+  const redacted = redactAuthenticationSecrets(action, result);
+  if (!interactiveTakeover) {
+    return {
+      ...redacted,
+      success: false,
+      code: 'INTERACTIVE_AUTH_REQUIRED',
+      message:
+        'Authentication requires a visible interactive Browser surface, which this provider does not expose.',
+      retryable: false,
+      safety: INTERACTIVE_AUTH_REQUIRED_SAFETY,
+    };
+  }
+  return {
+    ...redacted,
+    safety: AUTHENTICATION_TAKEOVER_SAFETY,
+  };
+}
+
+function redactAuthenticationSecrets(
+  action: LocalBrowserToolAction,
+  result: Record<string, unknown>,
+): Record<string, unknown> {
+  const redacted = { ...result };
+  const collectionKeys =
+    action === 'inspect'
+      ? ['elements']
+      : action === 'query'
+        ? ['elements', 'targets']
+        : action === 'inspect_editable_targets'
+          ? ['targets']
+          : [];
+  for (const key of collectionKeys) {
+    const collection = result[key];
+    if (!Array.isArray(collection)) continue;
+    redacted[key] = collection.map((element) =>
+      isAuthenticationSecretField(element) ? redactAuthenticationSecretField(element) : element,
+    );
+  }
+  if ((action === 'query' || action === 'get_dom') && typeof result.html === 'string') {
+    redacted.html = redactAuthenticationSecretMarkup(result.html);
+  }
+  return redacted;
+}
+
+function redactAuthenticationSecretField(element: unknown): unknown {
+  if (!isRecord(element)) return element;
+  const redacted = { ...element };
+  delete redacted.value;
+  delete redacted.text;
+  delete redacted.innerText;
+  delete redacted.textContent;
+  if (isRecord(redacted.attributes)) {
+    const attributes = { ...redacted.attributes };
+    delete attributes.value;
+    redacted.attributes = attributes;
+  }
+  redacted.valueRedacted = true;
+  return redacted;
+}
+
+function isAuthenticationSecretField(element: unknown): boolean {
+  if (!isRecord(element)) return false;
+  const attributes = isRecord(element.attributes) ? element.attributes : {};
+  const types = [element.type, attributes.type];
+  if (
+    types.some((value) => typeof value === 'string' && value.trim().toLowerCase() === 'password')
+  ) {
+    return true;
+  }
+
+  const autocomplete = [element.autocomplete, attributes.autocomplete]
+    .filter((value): value is string => typeof value === 'string')
+    .join(' ')
+    .toLowerCase();
+  return /(?:^|\s)(?:current-password|new-password|one-time-code)(?:\s|$)/u.test(autocomplete);
+}
+
+function containsAuthenticationSecretMarkup(html: string): boolean {
+  for (const match of html.matchAll(/<(?:input|textarea)\b[^>]*>/giu)) {
+    const markup = match[0];
+    if (
+      isAuthenticationSecretField({
+        attributes: {
+          type: readHtmlAttribute(markup, 'type'),
+          autocomplete: readHtmlAttribute(markup, 'autocomplete'),
+        },
+      })
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function redactAuthenticationSecretMarkup(html: string): string {
+  const redactValueAttribute = (markup: string): string =>
+    markup.replace(/\svalue\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/giu, ' value="[REDACTED]"');
+  const inputsRedacted = html.replace(/<input\b[^>]*>/giu, (markup) =>
+    isAuthenticationSecretField({
+      attributes: {
+        type: readHtmlAttribute(markup, 'type'),
+        autocomplete: readHtmlAttribute(markup, 'autocomplete'),
+      },
+    })
+      ? redactValueAttribute(markup)
+      : markup,
+  );
+  return inputsRedacted.replace(
+    /(<textarea\b[^>]*>)[\s\S]*?(<\/textarea>)/giu,
+    (markup, opening: string, closing: string) =>
+      isAuthenticationSecretField({
+        attributes: {
+          type: readHtmlAttribute(opening, 'type'),
+          autocomplete: readHtmlAttribute(opening, 'autocomplete'),
+        },
+      })
+        ? `${redactValueAttribute(opening)}[REDACTED]${closing}`
+        : markup,
+  );
+}
+
+function readHtmlAttribute(markup: string, name: 'type' | 'autocomplete'): string | undefined {
+  const match = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'iu').exec(
+    markup,
+  );
+  return match?.[1] ?? match?.[2] ?? match?.[3];
+}
+
+function readAuthenticationTakeoverSafety(
+  result: unknown,
+): typeof AUTHENTICATION_TAKEOVER_SAFETY | undefined {
+  if (!isRecord(result) || !isRecord(result.safety)) return undefined;
+  return result.safety.classification === AUTHENTICATION_TAKEOVER_SAFETY.classification &&
+    result.safety.requiredNextTool === AUTHENTICATION_TAKEOVER_SAFETY.requiredNextTool
+    ? AUTHENTICATION_TAKEOVER_SAFETY
+    : undefined;
+}
+
+function summarizeCompactActionResult(action: LocalBrowserToolAction, result: unknown): unknown {
+  if (!isRecord(result)) return sanitizeBrowserResult(result);
+
+  const summary: Record<string, unknown> = {};
+  if (typeof result.success === 'boolean') summary.success = result.success;
+  if (typeof result.openedInNewTab === 'boolean') {
+    summary.openedInNewTab = result.openedInNewTab;
+  }
+  if (action === 'return_to_previous_tab' && typeof result.returnedToPreviousTab === 'boolean') {
+    summary.returnedToPreviousTab = result.returnedToPreviousTab;
+  }
+  const preservedTabs = result.preservedTabs;
+  if (typeof preservedTabs === 'number' && Number.isFinite(preservedTabs)) {
+    summary.preservedTabs = Math.max(0, Math.floor(preservedTabs));
+  }
+  if (typeof result.duration === 'number' && Number.isFinite(result.duration)) {
+    summary.duration = result.duration;
+  }
+  if (typeof result.durationMs === 'number' && Number.isFinite(result.durationMs)) {
+    summary.durationMs = Math.max(0, Math.floor(result.durationMs));
+  }
+  for (const [key, limit] of Object.entries(COMPACT_STATUS_STRING_LIMITS)) {
+    const value = result[key];
+    if (typeof value === 'string') summary[key] = value.slice(0, limit);
+  }
+  if (action === 'drag') {
+    if (result.mode === 'pointer' || result.mode === 'html5') summary.mode = result.mode;
+    if (typeof result.dragStarted === 'boolean') summary.dragStarted = result.dragStarted;
+    if (typeof result.dropDispatched === 'boolean') {
+      summary.dropDispatched = result.dropDispatched;
+    }
+  }
+  if (action === 'upload_files') {
+    const effect = isRecord(result.effect) ? result.effect : undefined;
+    const filesAttached =
+      typeof result.filesAttached === 'number' && Number.isFinite(result.filesAttached)
+        ? result.filesAttached
+        : typeof effect?.fileCount === 'number' && Number.isFinite(effect.fileCount)
+          ? effect.fileCount
+          : undefined;
+    if (filesAttached !== undefined) {
+      summary.filesAttached = Math.max(0, Math.floor(filesAttached));
+    }
+    if (typeof result.chooserOpened === 'boolean') summary.chooserOpened = result.chooserOpened;
+  }
+  if (action === 'click' || action === 'double_click') {
+    const download = boundedBrowserDownload(result.download);
+    if (download) summary.download = download;
+  }
+  const target = boundedWriteTarget(result.target);
+  if (target) summary.target = target;
+  const effect =
+    action === 'scroll'
+      ? boundedScrollEffect(result.effect)
+      : action === 'hover'
+        ? boundedHoverEffect(result.effect)
+        : boundedWriteEffect(result.effect);
+  if (effect) summary.effect = effect;
+  const navigation = boundedNavigation(result.navigation);
+  if (navigation) summary.navigation = navigation;
+  if (typeof result.retryable === 'boolean') summary.retryable = result.retryable;
+  if (typeof result.recovery === 'string') summary.recovery = result.recovery.slice(0, 1_024);
+  return summary;
+}
+
+function boundedBrowserDownload(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined;
+  const download: Record<string, unknown> = {};
+  if (value.state === 'inProgress' || value.state === 'completed' || value.state === 'canceled') {
+    download.state = value.state;
+  }
+  if (value.observation === 'timeout') download.observation = 'timeout';
+  const suggestedFilename =
+    typeof value.suggestedFilename === 'string'
+      ? value.suggestedFilename
+      : typeof value.fileName === 'string'
+        ? value.fileName
+        : '';
+  if (suggestedFilename) download.suggestedFilename = suggestedFilename.slice(0, 255);
+  for (const key of ['receivedBytes', 'totalBytes'] as const) {
+    if (typeof value[key] === 'number' && Number.isFinite(value[key])) {
+      download[key] = Math.max(0, Math.floor(value[key]));
+    }
+  }
+  return Object.keys(download).length > 0 ? download : undefined;
+}
+
+function boundedWriteTarget(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined;
+  const target: Record<string, unknown> = {};
+  if (typeof value.resolved === 'boolean') target.resolved = value.resolved;
+  if (typeof value.tag === 'string') target.tag = value.tag.slice(0, 80);
+  if (typeof value.role === 'string') target.role = value.role.slice(0, 80);
+  if (typeof value.contentEditable === 'boolean') {
+    target.contentEditable = value.contentEditable;
+  }
+  return Object.keys(target).length > 0 ? target : undefined;
+}
+
+function boundedWriteEffect(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined;
+  const effect: Record<string, unknown> = {};
+  if (typeof value.dispatched === 'boolean') effect.dispatched = value.dispatched;
+  if (typeof value.verified === 'boolean') effect.verified = value.verified;
+  if (typeof value.verificationRequired === 'boolean') {
+    effect.verificationRequired = value.verificationRequired;
+  }
+  if (typeof value.focused === 'boolean') effect.focused = value.focused;
+  if (typeof value.textChanged === 'boolean') effect.textChanged = value.textChanged;
+  if (typeof value.textLength === 'number' && Number.isFinite(value.textLength)) {
+    effect.textLength = Math.max(0, Math.floor(value.textLength));
+  }
+  return Object.keys(effect).length > 0 ? effect : undefined;
+}
+
+function boundedHoverEffect(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined;
+  const effect: Record<string, unknown> = {};
+  if (typeof value.hovered === 'boolean') effect.hovered = value.hovered;
+  if (typeof value.tooltipObserved === 'boolean') {
+    effect.tooltipObserved = value.tooltipObserved;
+  }
+  if (isRecord(value.semantic)) {
+    const semantic: Record<string, unknown> = {};
+    if (typeof value.semantic.name === 'string') {
+      semantic.name = value.semantic.name.slice(0, 256);
+    }
+    if (
+      typeof value.semantic.source === 'string' &&
+      COMPACT_HOVER_SEMANTIC_SOURCES.has(value.semantic.source)
+    ) {
+      semantic.source = value.semantic.source;
+    }
+    if (
+      typeof value.semantic.confidence === 'string' &&
+      COMPACT_HOVER_CONFIDENCE_LEVELS.has(value.semantic.confidence)
+    ) {
+      semantic.confidence = value.semantic.confidence;
+    }
+    if (typeof value.semantic.supportingText === 'string') {
+      semantic.supportingText = value.semantic.supportingText.slice(0, 256);
+    }
+    if (Object.keys(semantic).length > 0) effect.semantic = semantic;
+  }
+  return Object.keys(effect).length > 0 ? effect : undefined;
+}
+
+function boundedScrollEffect(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined;
+  const effect: Record<string, unknown> = {};
+  if (typeof value.observed === 'boolean') effect.observed = value.observed;
+  if (typeof value.moved === 'boolean') effect.moved = value.moved;
+  const numericFields = ['actualDeltaX', 'actualDeltaY'] as const;
+  for (const field of numericFields) {
+    const numericValue = value[field];
+    if (typeof numericValue === 'number' && Number.isFinite(numericValue)) {
+      effect[field] = Math.round(numericValue);
+    }
+  }
+  if (typeof value.atStart === 'boolean') effect.atStart = value.atStart;
+  if (typeof value.atEnd === 'boolean') effect.atEnd = value.atEnd;
+  return Object.keys(effect).length > 0 ? effect : undefined;
+}
+
+function boundedNavigation(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined;
+  const navigation: Record<string, unknown> = {};
+  if (typeof value.detected === 'boolean') navigation.detected = value.detected;
+  if (typeof value.urlChanged === 'boolean') navigation.urlChanged = value.urlChanged;
+  if (typeof value.loaded === 'boolean') navigation.loaded = value.loaded;
+  if (typeof value.generation === 'number' && Number.isFinite(value.generation)) {
+    navigation.generation = Math.max(0, Math.floor(value.generation));
+  }
+  if (typeof value.beforeHost === 'string') navigation.beforeHost = value.beforeHost.slice(0, 255);
+  if (typeof value.afterHost === 'string') navigation.afterHost = value.afterHost.slice(0, 255);
+  return Object.keys(navigation).length > 0 ? navigation : undefined;
+}
+
+const POINTER_TARGET_ACTIONS = new Set<LocalBrowserToolAction>([
+  'click',
+  'click_and_wait_for_navigation',
+  'double_click',
+  'hover',
+  'fill',
+  'type',
+]);
+const ELEMENT_TARGET_ACTIONS = new Set<LocalBrowserToolAction>([
+  'check',
+  'uncheck',
+  'select_option',
+  'paste',
+]);
+
+function validateCompactBrowserInput(
+  action: LocalBrowserToolAction,
+  input: Record<string, unknown>,
+): string | undefined {
+  if (action === 'drag') {
+    return (
+      validateBrowserTarget(action, 'source', input.source, true) ??
+      validateBrowserTarget(action, 'target', input.target, true)
+    );
+  }
+  if (POINTER_TARGET_ACTIONS.has(action)) {
+    return validateBrowserTarget(action, 'target', input, true);
+  }
+  if (ELEMENT_TARGET_ACTIONS.has(action)) {
+    return validateBrowserTarget(action, 'target', input, false);
+  }
+  if (action === 'upload_files') {
+    if (!hasNonEmptyString(input.ref)) {
+      return 'Browser upload_files target requires an opaque element ref from inspect/query.';
+    }
+    return validateBrowserTarget(action, 'target', input, false);
+  }
+  if (action === 'scroll' && hasNonEmptyString(input.frame) && !hasNonEmptyString(input.ref)) {
+    return 'Browser scroll frame targeting requires an opaque element ref.';
+  }
+  return undefined;
+}
+
+function validateBrowserTarget(
+  action: LocalBrowserToolAction,
+  label: 'source' | 'target',
+  value: unknown,
+  allowPosition: boolean,
+): string | undefined {
+  const target = isRecord(value) ? value : {};
+  const hasRef = hasNonEmptyString(target.ref);
+  if (hasNonEmptyString(target.frame) && !hasRef) {
+    return `Browser ${action} ${label} frame requires an opaque element ref.`;
+  }
+  const hasElementTarget = hasRef || hasNonEmptyString(target.selector);
+  const hasAbsolutePosition = allowPosition && isRecord(target.position);
+  const hasNormalizedPosition = allowPosition && isRecord(target.normalized_position);
+  const hasCoordinateTarget = hasAbsolutePosition || hasNormalizedPosition;
+  if (hasElementTarget && hasCoordinateTarget) {
+    return `Browser ${action} ${label} must use either an element ref/selector or a coordinate position, not both.`;
+  }
+  if (hasAbsolutePosition && hasNormalizedPosition) {
+    return `Browser ${action} ${label} must use either position or normalized_position, not both.`;
+  }
+  if (!hasElementTarget && !hasCoordinateTarget) {
+    const supported = allowPosition
+      ? 'ref, selector, position, or normalized_position'
+      : 'ref or selector';
+    return `Browser ${action} ${label} requires at least one of ${supported}.`;
+  }
+  return undefined;
+}
+
+function hasNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function summarizeScreenshotResult(result: unknown, imageAvailableToModel: boolean): unknown {
+  const sanitizedMetadata = isRecord(result)
+    ? (() => {
+        const metadata = { ...result };
+        delete metadata.data;
+        return sanitizeBrowserResult(metadata);
+      })()
+    : {
+        success: false,
+        code: 'INVALID_SCREENSHOT_RESULT',
+        message: 'Browser screenshot returned invalid metadata.',
+      };
+  const userDelivery =
+    isRecord(sanitizedMetadata) && isRecord(sanitizedMetadata.userDelivery)
+      ? sanitizedMetadata.userDelivery
+      : {
+          available: false,
+          requiresExplicitUserRequest: true,
+        };
+  return {
+    ...(isRecord(sanitizedMetadata) ? sanitizedMetadata : {}),
+    imageAvailableToModel,
+    imageVisibleToUser: false,
+    userDelivery,
+    deliveryInstruction: SCREENSHOT_DELIVERY_INSTRUCTION,
+  };
+}
+
+function screenshotContent(result: unknown): ToolResultContent | undefined {
+  if (!isRecord(result)) return undefined;
+  if (typeof result.data !== 'string' || result.data.length === 0) return undefined;
+  const format = result.format === 'jpeg' || result.format === 'jpg' ? 'jpeg' : 'png';
+  return {
+    type: 'image',
+    data: result.data,
+    mimeType: `image/${format}`,
+  };
+}
+
+function sanitizeBrowserResult(value: unknown, omittedKeys?: ReadonlySet<string>): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeBrowserResult(item, omittedKeys));
+  }
+  if (!isRecord(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (omittedKeys?.has(key)) continue;
+    if (key === 'data' && typeof item === 'string' && item.length > 1024) {
+      out[key] = `[base64 omitted: ${item.length} chars]`;
+      continue;
+    }
+    out[key] = sanitizeBrowserResult(item, omittedKeys);
+  }
+  return out;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}

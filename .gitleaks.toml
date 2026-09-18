@@ -1,0 +1,62 @@
+title = "MiniMax Code source and history scanning"
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Permission translation key, not a credential"
+condition = "AND"
+paths = ['''(^|/)packages/agent-modules/permission/src/tools/bash-checker\.ts$''']
+regexTarget = "match"
+regexes = ['''^labelKey: 'permission\.scope\.byArgvPrefix2'$''']
+
+[[rules.allowlists]]
+description = "Documented keyboard shortcut"
+condition = "AND"
+paths = ['''(^|/)(packages/local-runtime|dist)/assets/skills/cu-desktop/SKILL\.md$''']
+regexTarget = "match"
+regexes = ['''^desktop_key combo="ctrl\+shift\+Escape"$''']
+
+[[rules.allowlists]]
+description = "Pagination example ends with explicit xxxx placeholder"
+condition = "AND"
+paths = ['''(^|/)(packages/local-runtime|dist)/assets/skills/lark-tools/cli-skills/lark-im/references/lark-im-reactions\.md$''']
+regexTarget = "match"
+regexes = ['''^page_token": "YhljsPiGfUgnVAg9urvRFd-BvSqRLxxxx"$''']
+
+[[rules.allowlists]]
+description = "PDF form field identifier, not an API key"
+condition = "AND"
+paths = ['''(^|/)(packages/local-runtime|dist)/assets/skills/pdf/templates/form-fill-acroform/cases/italy-schengen-visa-(zhangwei|example)/field_values\.case\.json$''']
+regexTarget = "match"
+regexes = ['''^key": "p1-place-of-birth"$''']
+
+[[rules.allowlists]]
+description = "TUI next-prompt keyboard shortcut"
+condition = "AND"
+paths = ['''(^|/)packages/tui/src/tui/engine/keybindings\.ts$''']
+regexTarget = "match"
+regexes = ['''^defaultKeys: "ctrl\+shift\+down"$''']
+
+[[rules.allowlists]]
+description = "Bundled TUI shortcut and permission translation key"
+condition = "AND"
+paths = ['''(^|/)dist/chunks/(chunk|launcher)-[A-Z0-9]+\.js$''']
+regexTarget = "match"
+regexes = ['''^defaultKeys: "ctrl\+shift\+down"$''', '''^labelKey: "permission\.scope\.byArgvPrefix2"$''']
+
+[[rules.allowlists]]
+description = "node-forge PKCS12 function alias, no key material"
+condition = "AND"
+paths = ['''(^|/)dist/chunks/chunk-[A-Z0-9]+\.js$''']
+regexTarget = "match"
+regexes = ['''^[A-Za-z_$][A-Za-z0-9_$]*\.generateKey = [A-Za-z_$][A-Za-z0-9_$]*\.pbe\.generatePkcs12Key;?$''']
+
+[[rules.allowlists]]
+description = "Exact synthetic privacy regression marker, including historical commits"
+condition = "AND"
+paths = ['''(^|/)packages/local-runtime/test/unit/error-reporting-privacy\.test\.ts$''']
+regexTarget = "match"
+regexes = ['''^SECRET = 'SYNTHETIC_PRIVATE_4cd7'$''']

@@ -1,0 +1,740 @@
+import { getRuntimePresetKey, resolveModelAvailability } from '@mavis/config';
+import {
+  hasConversationTaskModelSelection,
+  type ConversationModelThinkingSelection,
+  type ConversationModelSelection,
+  type ConversationTaskModelSelection,
+} from '@mavis/conversation-contract';
+import type { AgentExecutionProfile, LocalAgentService } from '../../service/agent/index.js';
+import {
+  resolveEffectiveAgentModelSelection,
+  modelConfigForRef,
+  modelRefForModel,
+  savedSessionModel,
+  parseSourceQualifiedModelKey,
+  type AgentModelSelectionInput,
+  type AgentModelSelectionSource,
+  type LocalConversationRuntimeConfig,
+  type ResolvedAgentModelSelection,
+} from '../../service/model-system/index.js';
+import { toLegacyTaskSessionBinding } from '../../service/session-system/index.js';
+import type {
+  CapturedTaskAgentBinding,
+  FrozenAgentExecutionDefinition,
+  LegacyFrozenAgentExecutionDefinition,
+  SessionRecord,
+  SessionAgentDefinitionBackfill,
+  SessionTaskAgentBindingBackfill,
+} from '../../service/session-system/index.js';
+import {
+  filterLocalTurnCapabilityInventory,
+  resolveAgentPromptSurface,
+  type AgentHostTurnCapabilityView,
+  type LocalTurnAgentProfileFacts,
+  type LocalTurnRawToolSources,
+} from '../../service/turn-system/index.js';
+
+/** One atomic-create payload for every Task Session, owned by Session record creation. */
+export interface TaskAgentBindingCaptureCoordinator {
+  capture(input: TaskAgentBindingCaptureInput): Promise<CapturedTaskAgentBinding>;
+  captureSessionDefinition(
+    input: TaskAgentBindingCaptureInput,
+  ): Promise<SessionAgentDefinitionBackfill>;
+  captureFrozenDefinition(
+    input: TaskAgentBindingCaptureInput,
+  ): Promise<SessionTaskAgentBindingBackfill>;
+}
+
+interface TaskAgentBindingCaptureInput {
+  readonly agentName: string;
+  /** The Session being frozen. V1 callers may provide only `parent`. */
+  readonly session?: SessionRecord;
+  readonly parent?: SessionRecord;
+  readonly appMode?: SessionRecord['appMode'];
+  readonly taskModelSelection?: ConversationTaskModelSelection;
+  readonly requestedModel?: ConversationModelSelection;
+  readonly parentModel?: FrozenAgentExecutionDefinition['model'];
+  /** A V1 mirror whose prompt and capability snapshot is authoritative. */
+  readonly legacyDefinition?: LegacyFrozenAgentExecutionDefinition;
+}
+
+export interface TaskAgentBindingCaptureOptions {
+  readonly agentService: LocalAgentService;
+  readonly config: () => LocalConversationRuntimeConfig;
+  /** Ready Desktop inventories captured at creation, never re-derived from a later Turn. */
+  readonly inventory: TaskAgentCapabilityInventory;
+  /** Bounded catalog-limit facts; no Agent file body or credentials are emitted. */
+  readonly diagnostics?: {
+    info?(fields: Readonly<Record<string, unknown>>, message?: string): void;
+  };
+  readonly runtimeOwnerKind?: string;
+  readonly capabilityProfile?: 'cli';
+}
+
+export interface TaskAgentCapabilityInventory {
+  capture(input: {
+    readonly session: SessionRecord;
+    readonly profile: AgentExecutionProfile;
+  }): Promise<TaskAgentReadyCapabilityInventory>;
+}
+
+interface TaskAgentReadyCapabilityInventory {
+  readonly sources: LocalTurnRawToolSources;
+  readonly desktopCapabilities?: AgentHostTurnCapabilityView;
+  readonly skills: readonly { readonly name: string; readonly sourceType?: number }[];
+}
+
+/** Captures an immutable V2 Agent definition before the Session row is inserted. */
+export function createTaskAgentBindingCaptureCoordinator(
+  options: TaskAgentBindingCaptureOptions,
+): TaskAgentBindingCaptureCoordinator {
+  return {
+    capture: async (input) => {
+      const captured = await captureDefinition(options, input, false);
+      return {
+        agentDefinition: captured.agentDefinition,
+        taskAgentBinding: captured.legacyTaskBinding,
+        effectiveModel: captured.effectiveModel,
+        ...(captured.effectiveModelVariant !== undefined
+          ? { effectiveModelVariant: captured.effectiveModelVariant }
+          : {}),
+        ...(captured.effectiveModelThinking
+          ? { effectiveModelThinking: captured.effectiveModelThinking }
+          : {}),
+        ...(captured.effectiveModelContextWindow === undefined
+          ? {}
+          : { effectiveModelContextWindow: captured.effectiveModelContextWindow }),
+        ...(captured.effectiveModelMaxOutputTokens === undefined
+          ? {}
+          : { effectiveModelMaxOutputTokens: captured.effectiveModelMaxOutputTokens }),
+      };
+    },
+    captureSessionDefinition: async (input) => {
+      const captured = await captureDefinition(options, input, true);
+      return { agentDefinition: captured.agentDefinition };
+    },
+    captureFrozenDefinition: async (input) => captureLegacyTaskBinding(options, input),
+  };
+}
+
+async function captureDefinition(
+  options: TaskAgentBindingCaptureOptions,
+  input: TaskAgentBindingCaptureInput,
+  historical: boolean,
+) {
+  const session = input.session ?? input.parent;
+  if (!session) throw new Error('Session Agent definition capture requires a Session.');
+  const config = options.config();
+  const profile = await renderSessionProfile({
+    options,
+    config,
+    agentName: input.agentName,
+    session,
+    appMode: input.appMode,
+    legacyTaskSurface: input.session === undefined,
+  });
+  const frozenSurface = input.legacyDefinition ?? {
+    systemPrompt: profile.agentSystemPrompt ?? '',
+    ...(profile.promptSnapshot ? { promptSnapshot: profile.promptSnapshot } : {}),
+    capabilities: freezeSelectorCapabilities(
+      profile,
+      await options.inventory.capture({ session, profile }),
+    ),
+  };
+  const selection = resolveCapturedModel({
+    config,
+    profile,
+    session,
+    input,
+    historical,
+    ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}),
+  });
+  logTaskModelDiagnostics(options.diagnostics, selection.diagnostics);
+  const effectiveModel = `${selection.providerId}/${selection.modelId}`;
+  const variant = resolvedModelVariant({ selection, session, parent: input.parent });
+  const thinking = resolvedThinkingSelection({ selection, session, parent: input.parent });
+  const ownerInstanceId = await captureOwnerInstanceId(options.agentService, profile);
+  return buildCapturedDefinition({
+    profile,
+    frozenSurface,
+    session,
+    selection,
+    effectiveModel,
+    variant,
+    thinking,
+    ownerInstanceId,
+  });
+}
+
+function resolveCapturedModel(input: {
+  readonly config: LocalConversationRuntimeConfig;
+  readonly profile: AgentExecutionProfile;
+  readonly session: SessionRecord;
+  readonly input: TaskAgentBindingCaptureInput;
+  readonly historical: boolean;
+  readonly diagnostics?: TaskAgentBindingCaptureOptions['diagnostics'];
+}): ResolvedAgentModelSelection {
+  const historical = input.historical ? historicalModelSelection(input.session) : undefined;
+  const requested = input.input.requestedModel;
+  if (
+    requested?.providerId === 'minimax' &&
+    requested.modelId &&
+    input.config.minimaxModelSource !== 'minimax_api_key'
+  ) {
+    // Validate public effort before the Agent's legacy on/off conversion can consume it.
+    modelRefForModel(
+      requested.providerId,
+      requested.modelId,
+      modelConfigForRef(input.config, requested.providerId, requested.modelId),
+      {
+        managed: true,
+        variant: requested.variant,
+        reasoning: requested.reasoning,
+        contextLimit: requested.contextLimit,
+        thinking: requested.thinking,
+      },
+    );
+  }
+  const resolved =
+    historical ??
+    resolveEffectiveAgentModelSelection({
+      config: input.config,
+      sources: modelSources({
+        profile: input.profile,
+        session: input.session,
+        parent: input.input.parent,
+        taskModelSelection: input.input.taskModelSelection,
+        parentModel: input.input.parentModel,
+        requestedModel:
+          input.config.minimaxModelSource !== 'minimax_api_key'
+            ? input.input.requestedModel
+            : undefined,
+        legacyTaskCapture: input.input.session === undefined,
+        ignoreSessionModel: input.historical,
+      }),
+    });
+  if (!resolved) throw new Error('No runtime or Agent model is configured.');
+  // `historical` marks a *describing* capture, not a running one: it completes
+  // or upgrades the frozen definition of an already-existing Session, always
+  // via `captureSessionDefinition` -> `ensureSessionAgentDefinition`. That runs
+  // whenever a Task Session's definition is absent or still V1 legacy, which is
+  // reached from several places — the startup backfill sweep
+  // (`backfillSessionAgentDefinitionForStartup`), on-demand backfill during
+  // execution preparation (`execution-source.ts`,
+  // `local-agent-config-builder.readOrBackfillTaskBinding`) and fork copying
+  // (`fork/data-capability.ts`). So this branch is NOT startup-only.
+  //
+  // It stays exempt because describing a historical Session must succeed even
+  // when the model it recorded has since been retired: the alternative is that
+  // one removed model makes an old Session permanently unopenable, and the
+  // startup sweep unable to finish. Availability is an *execution* concern and
+  // belongs after a frozen definition is read for a turn, not here.
+  //
+  // The branch below is the live path (`capture`), where the Session's saved
+  // model flows through `modelSources` and an unusable model is rejected during
+  // preparation, before any provider request is made.
+  if (!historical) {
+    const availability = resolveModelAvailability({
+      config: input.config,
+      providerId: resolved.providerId,
+      modelId: resolved.modelId,
+      preset: getRuntimePresetKey(),
+      source: 'config_default',
+    });
+    if (!availability.available) {
+      input.diagnostics?.info?.(
+        {
+          event: 'task_agent_captured_model_unavailable',
+          agent_name: input.profile.exactOwnerName,
+          provider_id: resolved.providerId,
+          model_id: resolved.modelId,
+        },
+        'Agent execution preparation rejected: captured model is not available',
+      );
+      throw new Error(availability.message);
+    }
+  }
+  return resolved;
+}
+
+function buildCapturedDefinition(input: {
+  readonly profile: AgentExecutionProfile;
+  readonly frozenSurface: Pick<
+    LegacyFrozenAgentExecutionDefinition,
+    'systemPrompt' | 'capabilities' | 'promptSnapshot'
+  >;
+  readonly session: SessionRecord;
+  readonly selection: ResolvedAgentModelSelection;
+  readonly effectiveModel: string;
+  readonly variant?: string;
+  readonly thinking?: ConversationModelThinkingSelection;
+  readonly ownerInstanceId?: string;
+}) {
+  const agentDefinition = buildAgentDefinition(input);
+  return {
+    agentDefinition,
+    legacyTaskBinding: toLegacyTaskSessionBinding(agentDefinition),
+    effectiveModel: input.effectiveModel,
+    ...(input.variant === undefined ? {} : { effectiveModelVariant: input.variant }),
+    ...(input.thinking ? { effectiveModelThinking: input.thinking } : {}),
+    ...(input.selection.contextWindow === undefined
+      ? {}
+      : { effectiveModelContextWindow: input.selection.contextWindow }),
+    ...(input.selection.maxOutputTokens === undefined
+      ? {}
+      : { effectiveModelMaxOutputTokens: input.selection.maxOutputTokens }),
+  };
+}
+
+function buildAgentDefinition(input: {
+  readonly profile: AgentExecutionProfile;
+  readonly frozenSurface: Pick<
+    LegacyFrozenAgentExecutionDefinition,
+    'systemPrompt' | 'capabilities' | 'promptSnapshot'
+  >;
+  readonly session: SessionRecord;
+  readonly selection: ResolvedAgentModelSelection;
+  readonly variant?: string;
+  readonly thinking?: ConversationModelThinkingSelection;
+  readonly ownerInstanceId?: string;
+}) {
+  return {
+    definition: {
+      definitionVersion: 2 as const,
+      exactOwnerName: input.profile.exactOwnerName,
+      ...(input.ownerInstanceId ? { ownerInstanceId: input.ownerInstanceId } : {}),
+      systemPrompt: input.frozenSurface.systemPrompt,
+      ...(input.frozenSurface.promptSnapshot
+        ? { promptSnapshot: input.frozenSurface.promptSnapshot }
+        : {}),
+      capabilities: input.frozenSurface.capabilities,
+      model: {
+        providerId: input.selection.providerId,
+        modelId: input.selection.modelId,
+        ...(input.selection.parameterSnapshot
+          ? { parameterSnapshot: input.selection.parameterSnapshot }
+          : {}),
+        ...(input.variant === undefined ? {} : { variant: input.variant }),
+        ...(input.thinking ? { thinking: input.thinking } : {}),
+        ...(input.selection.contextWindow === undefined
+          ? {}
+          : { contextWindow: input.selection.contextWindow }),
+        ...(input.selection.maxOutputTokens === undefined
+          ? {}
+          : { maxOutputTokens: input.selection.maxOutputTokens }),
+      },
+      project: {
+        workspaceDir: input.session.workspaceDir,
+        isDefaultWorkspace: input.session.isDefaultWorkspace === true,
+      },
+    },
+  };
+}
+
+async function renderSessionProfile(input: {
+  readonly options: TaskAgentBindingCaptureOptions;
+  readonly config: LocalConversationRuntimeConfig;
+  readonly agentName: string;
+  readonly session: SessionRecord;
+  readonly appMode?: SessionRecord['appMode'];
+  readonly legacyTaskSurface: boolean;
+}): Promise<AgentExecutionProfile> {
+  const configuredCapabilities = input.config.agents?.default;
+  const capabilities =
+    input.options.capabilityProfile === 'cli'
+      ? {
+          ...configuredCapabilities,
+          features: { ...configuredCapabilities?.features, mavis: false },
+        }
+      : configuredCapabilities;
+  return input.options.agentService.renderProfile({
+    exactOwnerName: input.agentName,
+    surface: input.legacyTaskSurface
+      ? 'task-child'
+      : resolveAgentPromptSurface(input.session, input.options.runtimeOwnerKind),
+    promptProfile: input.options.runtimeOwnerKind === 'tui' ? 'tui' : 'desktop',
+    appMode: input.appMode ?? input.session.appMode ?? 'coding',
+    capabilities,
+    memoryEnabled:
+      !isCommandLineRuntimeOwner(input.options.runtimeOwnerKind) && input.config.memory?.enabled,
+    cronEnabled: !isCommandLineRuntimeOwner(input.options.runtimeOwnerKind),
+    dataDirToken: input.config.dataDir,
+  });
+}
+
+/** V1 compatibility: historical Task prompt/capability recovery never reselects a model. */
+async function captureLegacyTaskBinding(
+  options: TaskAgentBindingCaptureOptions,
+  input: TaskAgentBindingCaptureInput,
+): Promise<SessionTaskAgentBindingBackfill> {
+  const session = input.parent ?? input.session;
+  if (!session) throw new Error('Historical Task Agent capture requires a parent Session.');
+  const profile = await renderSessionProfile({
+    options,
+    config: options.config(),
+    agentName: input.agentName,
+    session,
+    appMode: input.appMode,
+    legacyTaskSurface: true,
+  });
+  const inventory = await options.inventory.capture({ session, profile });
+  return {
+    taskAgentBinding: {
+      definition: {
+        definitionVersion: 1,
+        systemPrompt: profile.agentSystemPrompt ?? '',
+        ...(profile.promptSnapshot ? { promptSnapshot: profile.promptSnapshot } : {}),
+        capabilities: freezeSelectorCapabilities(profile, inventory),
+      },
+    },
+  };
+}
+
+function logTaskModelDiagnostics(
+  diagnostics: TaskAgentBindingCaptureOptions['diagnostics'],
+  entries: readonly {
+    readonly code: string;
+    readonly source: string;
+    readonly requested: number;
+    readonly effective: number;
+    readonly physicalLimit: number;
+  }[],
+): void {
+  for (const entry of entries) {
+    diagnostics?.info?.(
+      {
+        code: entry.code,
+        source: entry.source,
+        requested: entry.requested,
+        effective: entry.effective,
+        physical_limit: entry.physicalLimit,
+      },
+      'task_agent_model_selection_clamped',
+    );
+  }
+}
+
+interface ModelSourcesInput {
+  readonly profile: AgentExecutionProfile;
+  readonly session: SessionRecord;
+  readonly parent?: SessionRecord;
+  readonly taskModelSelection?: ConversationTaskModelSelection;
+  readonly requestedModel?: ConversationModelSelection;
+  readonly parentModel?: FrozenAgentExecutionDefinition['model'];
+  readonly legacyTaskCapture: boolean;
+  readonly ignoreSessionModel?: boolean;
+}
+
+function modelSources(input: ModelSourcesInput): readonly AgentModelSelectionSource[] {
+  if (input.requestedModel?.providerId === 'minimax' && input.requestedModel.modelId) {
+    const model = input.requestedModel;
+    return [
+      {
+        source: 'session-requested-model',
+        requireCatalog: true,
+        selection: {
+          model: `${model.providerId}/${model.modelId}`,
+          variant: model.variant,
+          reasoning: model.reasoning,
+          effort: model.thinking?.effort,
+          contextWindow: model.contextLimit,
+        },
+      },
+    ];
+  }
+  const target = taskTargetModelSelection(input.profile);
+  const parent = parentModelSelection(input);
+  const session = input.ignoreSessionModel ? undefined : sessionModelSelection(input.session);
+  const targetSource: AgentModelSelectionSource | undefined = target
+    ? {
+        source: 'session-target-agent',
+        selection: target,
+        requireCatalog: true,
+        allowCustomProviderPrefixFallback: true,
+        defaultMissingEffortOff: true,
+      }
+    : undefined;
+  const sources: AgentModelSelectionSource[] = [];
+  if (input.legacyTaskCapture || input.session.sessionKind === 'task') {
+    return taskModelSources(input, targetSource, parent);
+  }
+  if (session) {
+    sources.push({ source: 'session-requested-model', selection: session, requireCatalog: false });
+  }
+  if (targetSource) sources.push(targetSource);
+  if (parent) {
+    sources.push({
+      source: 'session-parent-model',
+      selection: parent,
+      requireCatalog: false,
+      parameterSnapshot: parentModelSnapshot(input),
+    });
+  }
+  return sources;
+}
+
+function taskModelSources(
+  input: ModelSourcesInput,
+  targetSource: AgentModelSelectionSource | undefined,
+  parent: AgentModelSelectionInput | undefined,
+): readonly AgentModelSelectionSource[] {
+  const sources: AgentModelSelectionSource[] = [];
+  if (hasConversationTaskModelSelection(input.taskModelSelection)) {
+    sources.push({
+      source: 'task-model-override',
+      selection: input.taskModelSelection,
+      requireCatalog: true,
+      allowCustomProviderPrefixFallback: true,
+      defaultMissingEffortOff: true,
+    });
+  }
+  if (targetSource) sources.push({ ...targetSource, source: 'task-target-agent' });
+  if (parent)
+    sources.push({
+      source: 'task-parent-session',
+      selection: parent,
+      requireCatalog: false,
+      parameterSnapshot: parentModelSnapshot(input),
+    });
+  return sources;
+}
+
+function parentModelSnapshot(input: ModelSourcesInput) {
+  return (
+    input.parentModel?.parameterSnapshot ?? savedSessionModel(input.parent ?? {})?.parameterSnapshot
+  );
+}
+
+function parentModelSelection(input: {
+  readonly session: SessionRecord;
+  readonly parent?: SessionRecord;
+  readonly legacyTaskCapture: boolean;
+  readonly parentModel?: FrozenAgentExecutionDefinition['model'];
+}): AgentModelSelectionInput | undefined {
+  if (!input.parent) return undefined;
+  if (!input.legacyTaskCapture && input.parent.sessionId === input.session.sessionId) {
+    return undefined;
+  }
+  if (input.parentModel?.parameterSnapshot) {
+    const model = input.parentModel;
+    return {
+      model: `${model.providerId}/${model.modelId}`,
+      variant: model.variant,
+      effort: model.thinking?.effort,
+      contextWindow: model.contextWindow,
+      maxOutputTokens: model.maxOutputTokens,
+    };
+  }
+  return sessionModelSelection(input.parent);
+}
+
+async function captureOwnerInstanceId(
+  agentService: LocalAgentService,
+  profile: AgentExecutionProfile,
+): Promise<string | undefined> {
+  if (profile.creationSource === 'builtin') return undefined;
+  const document = await agentService.getConfigDocument(profile.requestRef);
+  if (document.ownerKind !== 'custom' || document.exactOwnerName !== profile.exactOwnerName) {
+    throw new Error(
+      `Agent definition owner changed while Session was being created: ${profile.exactOwnerName}`,
+    );
+  }
+  if (!document.ownerInstanceId?.trim()) {
+    throw new Error(`Custom Agent instance is unavailable: ${profile.exactOwnerName}`);
+  }
+  return document.ownerInstanceId;
+}
+
+function sessionModelSelection(session: SessionRecord): AgentModelSelectionInput | undefined {
+  const model = session.effectiveModel?.trim();
+  if (!model) return undefined;
+  return {
+    model,
+    ...(session.effectiveModelVariant == null ? {} : { variant: session.effectiveModelVariant }),
+    ...(session.effectiveModelThinking?.effort
+      ? { effort: session.effectiveModelThinking.effort }
+      : {}),
+    ...(session.effectiveModelContextWindow !== undefined &&
+    session.effectiveModelContextWindow !== null
+      ? { contextWindow: session.effectiveModelContextWindow }
+      : {}),
+    ...(session.effectiveModelMaxOutputTokens !== undefined &&
+    session.effectiveModelMaxOutputTokens !== null
+      ? { maxOutputTokens: session.effectiveModelMaxOutputTokens }
+      : {}),
+  };
+}
+
+function modelVariant(value: string | null | undefined): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function resolvedModelVariant(input: {
+  readonly selection: { readonly source: string; readonly reasoning?: boolean };
+  readonly session: SessionRecord;
+  readonly parent?: SessionRecord;
+}): string | undefined {
+  if (input.selection.reasoning !== undefined) return input.selection.reasoning ? 'thinking' : '';
+  if (
+    input.selection.source === 'session-historical-model' ||
+    input.selection.source === 'session-requested-model'
+  ) {
+    return modelVariant(input.session.effectiveModelVariant);
+  }
+  if (
+    input.selection.source === 'task-parent-session' ||
+    input.selection.source === 'session-parent-model'
+  ) {
+    return modelVariant(input.parent?.effectiveModelVariant);
+  }
+  return undefined;
+}
+
+function historicalModelSelection(session: SessionRecord): ResolvedAgentModelSelection | undefined {
+  if (session.effectiveModel === undefined || session.effectiveModel === null) return undefined;
+  const parsed = parseSourceQualifiedModelKey(session.effectiveModel);
+  if (!parsed) return undefined;
+  return {
+    providerId: parsed.providerId,
+    modelId: parsed.modelId,
+    source: 'session-historical-model',
+    ...(session.effectiveModelContextWindow === undefined ||
+    session.effectiveModelContextWindow === null
+      ? {}
+      : { contextWindow: session.effectiveModelContextWindow }),
+    ...(session.effectiveModelMaxOutputTokens === undefined ||
+    session.effectiveModelMaxOutputTokens === null
+      ? {}
+      : { maxOutputTokens: session.effectiveModelMaxOutputTokens }),
+    diagnostics: [],
+  };
+}
+
+function resolvedThinkingSelection(input: {
+  readonly selection: {
+    readonly source: string;
+    readonly effort?: string;
+    readonly reasoning?: boolean;
+  };
+  readonly session: SessionRecord;
+  readonly parent?: SessionRecord;
+}): ConversationModelThinkingSelection | undefined {
+  if (input.selection.reasoning !== undefined) {
+    return input.selection.reasoning && input.selection.effort
+      ? { effort: input.selection.effort }
+      : undefined;
+  }
+  const base = baseThinkingSelection(input);
+  const thinking = {
+    ...(base ?? {}),
+    ...(input.selection.effort === undefined ? {} : { effort: input.selection.effort }),
+    ...(base?.budgets ? { budgets: { ...base.budgets } } : {}),
+  } satisfies ConversationModelThinkingSelection;
+  return Object.keys(thinking).length > 0 ? thinking : undefined;
+}
+
+function baseThinkingSelection(input: {
+  readonly selection: { readonly source: string };
+  readonly session: SessionRecord;
+  readonly parent?: SessionRecord;
+}): ConversationModelThinkingSelection | null | undefined {
+  if (
+    input.selection.source === 'session-historical-model' ||
+    input.selection.source === 'session-requested-model'
+  ) {
+    return input.session.effectiveModelThinking;
+  }
+  if (
+    input.selection.source === 'task-parent-session' ||
+    input.selection.source === 'session-parent-model'
+  ) {
+    return input.parent?.effectiveModelThinking;
+  }
+  return undefined;
+}
+
+function taskTargetModelSelection(
+  profile: AgentExecutionProfile,
+): AgentModelSelectionInput | undefined {
+  return profile.configSelection?.model ? profile.configSelection : undefined;
+}
+
+function freezeSelectorCapabilities(
+  profile: AgentExecutionProfile,
+  ready: TaskAgentReadyCapabilityInventory,
+) {
+  const filtered = filterLocalTurnCapabilityInventory({
+    sources: ready.sources,
+    agentProfile: toTurnProfileFacts(profile),
+    ...(ready.desktopCapabilities ? { desktopCapabilities: ready.desktopCapabilities } : {}),
+  });
+  const tools = uniqueNames([
+    ...filtered.nativeTools.map((tool) => tool.def.name),
+    ...filtered.mcpEntries.map(({ tool }) => tool.def.name),
+    ...filtered.threadGoalTools.map((tool) => tool.def.name),
+    ...(filtered.desktopCapabilities?.runtimeTools.map((tool) => tool.def.name) ?? []),
+  ]);
+  const mcpServers = uniqueNames([
+    ...filtered.mcpEntries.flatMap((entry) => (entry.serverName ? [entry.serverName] : [])),
+    ...(filtered.desktopCapabilities?.runtimeToolBindings.flatMap((binding) =>
+      binding.kind === 'mcp' ? [binding.source] : [],
+    ) ?? []),
+  ]);
+  const skills = uniqueNames(
+    ready.skills
+      .filter((skill) => filtered.selector.allowsSkill(skill.name))
+      .map((skill) => skill.name),
+  );
+  const extensionSkills = uniqueNames([
+    ...ready.skills
+      .filter((skill) => !isBuiltinRuntimeSkill(skill))
+      .filter((skill) => filtered.selector.allowsSkill(skill.name))
+      .filter((skill) => filtered.selector.allowsExtensionSkill('', skill.name))
+      .map((skill) => skill.name),
+    ...(filtered.desktopCapabilities?.skills ?? [])
+      .filter((skill) => filtered.selector.allowsExtensionSkill(skill.pluginName, skill.name))
+      .map((skill) => `${skill.pluginName}:${skill.name}`),
+  ]);
+  const disallowedTools = profile.configSelection?.disallowedTools ?? [];
+  return {
+    // Undefined canonical selectors resolve to the current ready inventory at
+    // Task creation. Persisting every bucket turns the snapshot into a true
+    // upper bound: later installs can only be removed by current runtime gates.
+    tools,
+    disallowedTools: [...disallowedTools],
+    mcpServers,
+    skills,
+    extensionSkills,
+  };
+}
+
+function isBuiltinRuntimeSkill(
+  skill: TaskAgentReadyCapabilityInventory['skills'][number],
+): boolean {
+  return skill.sourceType === 1;
+}
+
+function toTurnProfileFacts(profile: AgentExecutionProfile): LocalTurnAgentProfileFacts {
+  return {
+    capabilityCeiling: profile.capabilityCeiling,
+    ...(profile.creationSource === 'builtin' ? { canonicalRole: profile.canonicalViewName } : {}),
+    trustedBuiltin: profile.creationSource === 'builtin' && profile.provenance.source !== 'custom',
+    surface: profile.surface,
+    ...(profile.configSelection ? { configSelection: profile.configSelection } : {}),
+  };
+}
+
+function uniqueNames(values: readonly string[]): readonly string[] {
+  const normalized = new Map<string, string>();
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    const key = trimmed.normalize('NFKC').toLocaleLowerCase('en-US');
+    if (!normalized.has(key)) normalized.set(key, trimmed);
+  }
+  return [...normalized.values()];
+}
+
+function isCommandLineRuntimeOwner(runtimeOwnerKind: string | undefined): boolean {
+  return runtimeOwnerKind === 'cli' || runtimeOwnerKind === 'tui';
+}

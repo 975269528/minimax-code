@@ -1,0 +1,41 @@
+{
+  "name": "@mavis/config",
+  "version": "0.2.1",
+  "type": "module",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./data-dir": {
+      "types": "./src/data-dir.ts",
+      "import": "./dist/data-dir.js",
+      "default": "./dist/data-dir.js"
+    },
+    "./cu-backend": {
+      "types": "./src/cu-backend.ts",
+      "import": "./dist/cu-backend.js",
+      "default": "./dist/cu-backend.js"
+    },
+    "./sandbox-settings": {
+      "types": "./src/sandbox-settings.ts",
+      "import": "./dist/sandbox-settings.js",
+      "default": "./dist/sandbox-settings.js"
+    }
+  },
+  "dependencies": {
+    "@mavis/shared": "workspace:^",
+    "js-yaml": "^4",
+    "proper-lockfile": "^4"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4",
+    "@types/node": "^20",
+    "@types/proper-lockfile": "^4",
+    "typescript": "^5"
+  },
+  "private": true,
+  "license": "MIT"
+}

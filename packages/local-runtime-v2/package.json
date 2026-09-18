@@ -1,0 +1,127 @@
+{
+  "name": "@mavis/local-runtime-v2",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./dist/index.js"
+    },
+    "./process-local": {
+      "types": "./src/local/host-contract.ts",
+      "import": "./dist/local/host-contract.js"
+    },
+    "./cli-service": {
+      "types": "./src/local/index.ts",
+      "import": "./dist/local/index.js"
+    },
+    "./logging": {
+      "types": "./src/infra/logging/index.ts",
+      "import": "./dist/infra/logging/index.js"
+    },
+    "./canonical-history": {
+      "types": "./src/infra/file/canonical-history.ts",
+      "import": "./dist/infra/file/canonical-history.js"
+    },
+    "./session-system": {
+      "types": "./src/service/session-system/index.ts",
+      "import": "./dist/service/session-system/index.js"
+    },
+    "./turn-system": {
+      "types": "./src/service/turn-system/index.ts",
+      "import": "./dist/service/turn-system/index.js"
+    },
+    "./agent": {
+      "types": "./src/service/agent/public.ts",
+      "import": "./dist/service/agent/public.js"
+    }
+  },
+  "jscpd": {
+    "threshold": 5,
+    "reporters": [
+      "console"
+    ],
+    "minLines": 5,
+    "minTokens": 50,
+    "mode": "mild",
+    "format": [
+      "typescript"
+    ],
+    "ignore": [
+      "src/http/routing/bindings.gen.ts",
+      "src/http/routing/contracts.gen.ts",
+      "src/http/generated/**",
+      "src/**/*.test.ts"
+    ]
+  },
+  "knip": {
+    "entry": [
+      "src/index.ts!",
+      "src/local/host-contract.ts!",
+      "src/local/index.ts!",
+      "src/infra/logging/index.ts!",
+      "src/infra/testing/index.ts!",
+      "src/application/index.ts!",
+      "src/infra/file/canonical-history.ts!",
+      "src/service/session-system/index.ts!",
+      "src/service/turn-system/index.ts!",
+      "src/service/agent/public.ts!",
+      "src/service/turn-system/agent-host/index.ts!",
+      "src/service/turn-system/compaction/index.ts!",
+      "src/service/model-system/index.ts!",
+      "src/http/routing/bindings.gen.ts!",
+      "src/http/routing/contracts.gen.ts!",
+      "src/http/generated/**!"
+    ],
+    "project": [
+      "src/**/*.ts!",
+      "!src/**/*.test.ts!"
+    ]
+  },
+  "dependencies": {
+    "@mavis/session-report": "workspace:^",
+    "@earendil-works/pi-ai": "workspace:*",
+    "@earendil-works/pi-agent-core": "workspace:*",
+    "@earendil-works/pi-coding-agent": "workspace:*",
+    "@mavis/agent-core": "workspace:*",
+    "@mavis/agent-extension": "workspace:^",
+    "@mavis/agent-runtime": "workspace:*",
+    "@mavis/agent-tools": "workspace:*",
+    "@mavis/config": "workspace:*",
+    "@mavis/conversation-contract": "workspace:*",
+    "@mavis/context-manager": "workspace:^",
+    "@mavis/goal": "workspace:^",
+    "@mavis/local-runtime": "workspace:*",
+    "@mavis/mcp": "workspace:^",
+    "@mavis/permission": "workspace:^",
+    "@mavis/plugin-hooks": "workspace:^",
+    "@mavis/protocol": "workspace:*",
+    "@mavis/shared": "workspace:^",
+    "@mavis/system-reminder": "workspace:^",
+    "@minimax/mcode-sandbox-runtime": "workspace:*",
+    "@sinclair/typebox": "^0.34.0",
+    "better-sqlite3": "12.11.1",
+    "croner": "^9",
+    "drizzle-orm": "^0.45.2",
+    "handlebars": "^4.7.9",
+    "hono": "^4.7.11",
+    "jszip": "^3.10.1",
+    "proper-lockfile": "^4",
+    "typebox": "1.1.38",
+    "smol-toml": "1.7.1",
+    "yaml": "^2.9.0"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@types/node": "^20",
+    "@types/proper-lockfile": "^4",
+    "dependency-cruiser": "18.2.0",
+    "jscpd": "^5.0.12",
+    "knip": "^6.27.0",
+    "typescript": "^5",
+    "vitest": "^2"
+  },
+  "license": "MIT"
+}

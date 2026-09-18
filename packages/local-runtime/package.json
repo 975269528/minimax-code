@@ -1,0 +1,59 @@
+{
+  "name": "@mavis/local-runtime",
+  "version": "0.2.1",
+  "description": "Clean local runtime host for Mavis desktop and CLI product paths.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "workspace:*",
+    "@earendil-works/pi-ai": "workspace:*",
+    "@earendil-works/pi-coding-agent": "workspace:*",
+    "@mavis/agent-core": "workspace:^",
+    "@mavis/agent-tools": "workspace:^",
+    "@mavis/config": "workspace:^",
+    "@mavis/conversation-contract": "workspace:^",
+    "@mavis/context-manager": "workspace:^",
+    "@mavis/cron": "workspace:^",
+    "@mavis/goal": "workspace:^",
+    "@mavis/mcp": "workspace:^",
+    "@mavis/permission": "workspace:^",
+    "@mavis/protocol": "workspace:*",
+    "@mavis/shared": "workspace:^",
+    "@mavis/skills": "workspace:^",
+    "@mavis/system-reminder": "workspace:^",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "better-sqlite3": "12.11.1",
+    "croner": "^9",
+    "diff": "^8.0.4",
+    "handlebars": "^4.7.9",
+    "hono": "^4.7.11",
+    "jszip": "^3.10.1",
+    "lazystream": "^1.0.1",
+    "js-yaml": "^4",
+    "bmp-js": "0.1.0",
+    "jpeg-js": "0.4.4",
+    "pngjs": "6.0.0",
+    "proper-lockfile": "^4",
+    "saxes": "6.0.0",
+    "zod": "^3"
+  },
+  "optionalDependencies": {
+    "@larksuiteoapi/node-sdk": "^1.60.0"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4",
+    "@types/lazystream": "^1.0.0",
+    "@types/node": "^20",
+    "@types/pngjs": "^6.0.5",
+    "@types/proper-lockfile": "^4",
+    "typescript": "^5",
+    "vitest": "^2"
+  },
+  "private": true,
+  "license": "MIT"
+}

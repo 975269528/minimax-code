@@ -1,0 +1,20 @@
+{
+  "name": "@mavis/conversation-contract",
+  "version": "0.1.0",
+  "description": "Runtime-neutral Session, Queue, Turn, and compaction service contract.",
+  "type": "module",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "typescript": "^5",
+    "vitest": "^2"
+  },
+  "private": true,
+  "license": "MIT"
+}

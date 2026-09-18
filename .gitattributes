@@ -1,0 +1,16 @@
+* text=auto eol=lf
+release/public-source.json linguist-generated=true
+release/dependency-licenses.json linguist-generated=true
+tsconfig.standalone.json linguist-generated=true
+*.gz -text
+*.jar -text
+*.exe -text
+*.png -text
+*.jpg -text
+*.jpeg -text
+*.woff2 -text
+*.pdf -text
+*.gif -text
+*.mp4 -text
+# Preserve vendored Office schema bytes when importing the reviewed source archive.
+packages/local-runtime/assets/skills/xlsx/scripts/office/schemas/**/*.xsd -text

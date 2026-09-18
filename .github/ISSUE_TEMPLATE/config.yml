@@ -1,1 +1,8 @@
 blank_issues_enabled: false
+contact_links:
+  - name: CLI quick start and troubleshooting
+    url: https://agent.minimax.io/docs/cli/quick-start
+    about: Installation, account regions, first tasks, and links to troubleshooting.
+  - name: Report a vulnerability privately
+    url: https://github.com/MiniMax-AI/minimax-code/blob/main/SECURITY.md
+    about: Follow the security reporting process. Do not disclose vulnerabilities or sensitive data in public issues.

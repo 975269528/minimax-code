@@ -1,0 +1,48 @@
+# TUI capability coverage
+
+The current capability target is **TUI 0.4.12**; see [version and evidence baseline](open-source-status.md#version-and-evidence-baseline) for the separate workspace and embedded-tool versions. “Restored” below describes implementation and assembly, not acceptance of every account or online service.
+
+The evidence column summarizes the historical TUI 0.3.11 restoration record from 2026-09-11. It does not claim fresh TUI 0.4.12 live-service acceptance. Use [current verification status](verification.md#current-source-verification-status) for checks run against the updated source and explicit NOT RUN boundaries.
+
+| Capability | Implementation | Evidence |
+| --- | --- | --- |
+| MiniMax login, logout, Token Plan, quota, check-in | OAuth Core, account clients, and TUI / CLI entry points restored | Login-state, auth-command, check-in, provider, and ACP tests; production Token Plan session and resume passed |
+| BYOK / custom models | Retained; headless model overrides no longer inherit the default Token Plan login requirement | Local protocol server drives runtime, resume, and file tools; live BYOK session passed; managed models still reject unauthenticated requests |
+| mcode-tools | Public package's unchanged 0.0.4 artifact, launcher, and short-lived token leases restored | Archive SHA-512, CLI SHA-256, real CLI startup, lease and host integration tests; production shared-broker authentication passed |
+| Search and Matrix image / audio / video tools | Matrix MCP and tool assembly restored; search is independent of mcode-tools | MCP configuration and auth-isolation tests; actual search passed; generation requests not run |
+| Official, local, and GitHub plugins | Official sources, marketplace reads, and installation control restored; local sources retained | Plugin application, source-page, and offline local CLI tests; actual official catalog read passed |
+| Managed connectors | Cloud client, permissions, and invocation adapters restored | Connector runtime and cloud transport tests; actual tool discovery passed; business writes not run |
+| Updates | Update entry points, install-source detection, and signature verification restored; public packages use public npm | Update application and service tests; no real installation / upgrade on the development machine |
+| Feedback and diagnostic uploads | Reviewed feedback text and minimized diagnostic summaries | Synthetic fixtures exercise session collection and capture/decode the final ZIP upload; no live uploads or real content |
+| Automatic LLM error reports | Bounded diagnostic facts minimized before encryption | Synthetic provider errors and native Headers; final HTTP batches captured and decrypted locally |
+| Telemetry | Disabled by default; explicit opt-in with environment overrides; account, device, workspace, session, model, and command identifiers removed | Privacy regression tests intercept and decode requests locally; no live upload |
+| Auto permissions | Cloud classifier restored; local rules and confirmation on failure retained | Classifier client, permission facade, and sandbox tests |
+| Model catalog | Online catalog and bundled snapshot fallback restored | Actual build boundary checks and offline startup; online catalog contents not accepted |
+| Files, shell, subagents, sessions, headless, ACP | Actual runtime retained | BYOK, file reads, session resume, ACP, sandbox, and status protocol tests |
+| Built-in skills, MCP, plugin tools | Original TUI assets and activation conditions retained | Asset build, plugin, and MCP tests; no claim that every skill has passed a real task |
+
+## Desktop boundary
+
+Background workspace indexing is removed from this distribution. Runtime startup and conversation turns do not collect workspace snapshots, create workspace ZIP archives, or upload/retry them for cloud indexing. The semantic workspace search tool and its enablement policy are also removed; a saved indexing preference cannot reactivate them. Existing indexing records are left inert. User-directed file reading, search, and Git operations remain available.
+
+Desktop features not enabled by default in the original TUI are outside this restoration commitment: remote encrypted prompt updates, cloud session handoff, and native Electron desktop control. Earlier descriptions incorrectly counted removal of those sources as TUI feature loss. Desktop HTTP services and internal generated IDL remain outside the public repository.
+
+Website deployment tools and routes follow the original tool set. Successful deployment still depends on login, service permissions, and backend support; no real deployment has been performed.
+
+## Release boundary
+
+Production client paths are restored without internal registries or test-service addresses as build dependencies. Real account behavior, quota, billing, model quality, media generation, and deployment require separate acceptance. Mocks, protocol fixtures, and successful builds do not replace that evidence. A private GitHub review repository is in place; the source repository remains private. Public npm `latest` was 0.4.12 on 2026-09-18; that metadata observation does not validate the installed package or deploy a backend. See `release-audit.md` for actual acceptance results.
+
+## Diagnostic upload privacy
+
+Automatic LLM error reports use an allowlist before buffering and encryption. Schema 3 retains a numeric release version, the fixed metric error category, known error names/codes, HTTP statuses (100–599), and bounded error/cause/properties relationships. It excludes error messages, stacks, headers (including native `Headers`), prompts, request/model metadata, URLs, arbitrary property names/values, and binary data. Unknown event types are dropped; the event type and code location are fixed at the reporter boundary. Encryption remains a transport layer, not redaction. Authenticated transport still uses the signed-in account token and user ID.
+
+The separate TUI incident reporter uses schema 2. It retains a fixed event category, phase/severity/impact, handled flag, generated IDs, timestamps, numeric release/Node versions, known platform/architecture, known error names/codes and HTTP status, and up to 20 fixed breadcrumb names with an optional phase. It excludes free-form error text, stack/cause/aggregate contents, caller context, component/operation labels, terminal/OS strings, and original code locations. Fingerprints are derived only from the minimized category and error facts, so grouping is intentionally coarser. Legacy schema-1 pending and sent files are deleted best-effort at startup and never uploaded; current-schema pending files are projected again before encryption and replaced with their minimized copy before being marked sent. The gateway wire encryption format is unchanged. Production ingestion of schema 2 has not been tested.
+
+Feedback review describes the actual upload: user-reviewed feedback text, bounded client/platform and optional session metadata, and diagnostic **counts**, not original session files. Recognized credentials are redacted from the reviewed description; arbitrary personal text in that description is still sent, so review it before submitting.
+
+Every collected diagnostic artifact, including prioritized session artifacts, is projected through `diagnostic-counts-v1`. The ZIP contains counts of known roles, states, error types/codes, log levels and HTTP statuses, plus parsing/omission indicators. JSON/JSONL can contribute these facts; malformed data, binary attachments and free-text logs contribute no raw content. Source filenames and paths are replaced with opaque archive names; only a small fixed list of artifact kinds (such as `messages.jsonl`) is retained. Unrelated session manifests are not collected. Local source files are unchanged.
+
+There is no raw-attachment upload option in this flow. Prompts, conversation text, tool arguments/results, command output, workspace excerpts, raw errors and unknown fields are excluded even if they contain no recognizable credential pattern. This intentionally reduces diagnostic detail: reproducing an exact response or inspecting an original stack is not possible from these uploads. Future raw attachments would require a separate, explicit review and consent surface describing their contents and scope.
+
+The regression tests use temporary synthetic files and intercepted HTTP only. They decrypt the final automatic-report request as a receiver would, and unzip the actual feedback PUT body after real session-report collection. They do not validate production ingestion of the new schemas, retention policies, live services, other telemetry paths or other platforms.

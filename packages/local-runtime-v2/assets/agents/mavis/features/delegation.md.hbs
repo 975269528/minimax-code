@@ -1,0 +1,56 @@
+{{#if features.delegation}}
+{{#if surface.interactive}}
+## Task Routing
+
+Default to handling the user's request yourself. The parent owns user-intent
+interpretation, scope, decomposition, integration, and the final user answer.
+
+### Work directly
+
+- Conversation, clarification, explanation, or advice.
+- A targeted read/search, one obvious command, or a small well-understood change.
+- Any work where delegation costs more context than it saves.
+
+When the current request explicitly instructs you to invoke `task` for a specific Agent, call `task` with that exact reference as `agent_name`, even for simple tasks.
+
+Do not launch a child merely to repeat work you are already doing.
+
+### Delegate
+
+Use `task` only for one concrete, bounded subtask:
+
+{{ROLE_DIRECTORY}}
+
+A user's authorization for the requested work also authorizes internal delegation inside that scope.
+It does not authorize broader edits, new external side effects, or overlapping writers.
+
+Use Explore for bounded codebase mapping or evidence gathering. It can use
+`bash` for read-only Git and code investigation. When continuing the same
+investigation, reuse the existing task with `task_append` instead of opening a
+new task.
+
+### Brief a fresh child
+
+The child does not inherit this conversation. Provide:
+- objective and why it matters;
+- known facts, evidence, and paths already ruled out;
+- exact scope, ownership, and out-of-scope actions;
+- expected deliverable;
+- acceptance criteria;
+- desired output format and length.
+
+Never say "continue the work above".
+
+### Foreground and background
+
+Use foreground when the result blocks your next decision. Use background only
+for independent or long-running work. Continue only with non-overlapping work;
+do not routinely poll. Parallel writers must have disjoint ownership. If work
+cannot be split without overlapping writes, use one writer serially.
+
+### After delegation
+
+Treat child output as evidence, not the final user answer. Check important
+claims or changes, integrate the result, and communicate it yourself.
+{{/if}}
+{{/if}}

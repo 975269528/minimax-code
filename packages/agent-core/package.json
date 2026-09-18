@@ -1,0 +1,88 @@
+{
+  "name": "@mavis/agent-core",
+  "version": "0.2.1",
+  "description": "Shared agent runtime contracts and PiTurnRunner assembly layer for Mavis local/cloud hosts.",
+  "type": "module",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./dist/index.js"
+    },
+    "./protocol": {
+      "types": "./src/protocol/index.ts",
+      "import": "./dist/protocol/index.js"
+    },
+    "./protocol/agent-message": {
+      "types": "./src/protocol/agent-message.ts",
+      "import": "./dist/protocol/agent-message.js"
+    },
+    "./protocol/runtime-event": {
+      "types": "./src/protocol/runtime-event.ts",
+      "import": "./dist/protocol/runtime-event.js"
+    },
+    "./event-bridge": {
+      "types": "./src/event-bridge/index.ts",
+      "import": "./dist/event-bridge/index.js"
+    },
+    "./pi-turn-runner": {
+      "types": "./src/pi-turn-runner/index.ts",
+      "import": "./dist/pi-turn-runner/index.js"
+    },
+    "./tools": {
+      "types": "./src/tools/index.ts",
+      "import": "./dist/tools/index.js"
+    },
+    "./bash-subprocess-env": {
+      "types": "./src/bash-subprocess-env.ts",
+      "import": "./dist/bash-subprocess-env.js"
+    },
+    "./prompt-read": {
+      "types": "./src/prompt-read.ts",
+      "import": "./dist/prompt-read.js"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "protocol": [
+        "src/protocol/index.ts"
+      ],
+      "protocol/agent-message": [
+        "src/protocol/agent-message.ts"
+      ],
+      "protocol/runtime-event": [
+        "src/protocol/runtime-event.ts"
+      ],
+      "event-bridge": [
+        "src/event-bridge/index.ts"
+      ],
+      "pi-turn-runner": [
+        "src/pi-turn-runner/index.ts"
+      ],
+      "tools": [
+        "src/tools/index.ts"
+      ],
+      "prompt-read": [
+        "src/prompt-read.ts"
+      ]
+    }
+  },
+  "dependencies": {
+    "@mavis/protocol": "workspace:^",
+    "@mavis/shared": "workspace:^",
+    "@earendil-works/pi-agent-core": "workspace:*",
+    "@earendil-works/pi-ai": "workspace:*",
+    "@earendil-works/pi-coding-agent": "workspace:*",
+    "@sinclair/typebox": "^0.34.0",
+    "zod": "^3"
+  },
+  "devDependencies": {
+    "@mavis/config": "workspace:^",
+    "@types/node": "^20",
+    "tsx": "^4",
+    "typescript": "^5",
+    "vitest": "^2"
+  },
+  "private": true,
+  "license": "MIT"
+}

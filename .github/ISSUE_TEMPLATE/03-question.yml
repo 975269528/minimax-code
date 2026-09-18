@@ -1,39 +1,42 @@
-name: Question / 使用问题
-description: Ask a question about MiniMax Code desktop
+name: Usage question
+description: Ask about the Desktop app, CLI, or building from source.
 title: "[Question]: "
 labels: ["question"]
-
 body:
+  - type: dropdown
+    id: product
+    attributes:
+      label: Product or interface
+      options:
+        - Desktop app
+        - CLI - interactive TUI
+        - CLI - headless
+        - CLI - ACP
+        - Source build or repository tooling
+    validations:
+      required: true
   - type: textarea
     id: question
     attributes:
-      label: Question / 问题
-      placeholder: "How do I..."
+      label: Question
     validations:
       required: true
-
   - type: dropdown
     id: platform
     attributes:
-      label: Platform / 平台
+      label: Platform
       options:
         - macOS
         - Windows
+        - Linux
+        - WSL
+        - Multiple platforms
     validations:
-      required: false
-
+      required: true
   - type: textarea
     id: context
     attributes:
-      label: Context / 补充信息
-      description: What have you tried? Add screenshots if useful.
+      label: Version and what you have tried
+      description: Include documentation you followed and relevant redacted output. Do not include keys or account data.
     validations:
-      required: false
-
-  - type: checkboxes
-    id: checklist
-    attributes:
-      label: Before submitting / 提交前确认
-      options:
-        - label: I have searched existing issues.
-          required: true
+      required: true

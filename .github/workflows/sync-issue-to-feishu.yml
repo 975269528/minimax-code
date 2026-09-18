@@ -13,7 +13,8 @@ jobs:
     name: Notify Feishu
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    if: ${{ !github.event.issue.pull_request }}
+    # Preserve the public support integration without forwarding private review issues.
+    if: ${{ github.repository == 'MiniMax-AI/minimax-code' && github.event.repository.private == false && !github.event.issue.pull_request }}
     env:
       FEISHU_BOT_WEBHOOK: ${{ secrets.FEISHU_BOT_WEBHOOK }}
       FEISHU_BOT_SECRET: ${{ secrets.FEISHU_BOT_SECRET }}

@@ -1,0 +1,194 @@
+{
+  "schemaVersion": 1,
+  "forkState": "pi_canonical_with_recorded_local_changes",
+  "baselineAdaptedTreeDigest": "53d36cf6f27850da54cd0345869b19797c00d21855ba1c930fbb059ad04d4bfd",
+  "typescriptContract": {
+    "config": "packages/tui/tsconfig.json",
+    "target": "ES2022",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "separateEngineCompilation": false
+  },
+  "files": [
+    {
+      "path": "autocomplete.ts",
+      "currentSha256": "e18a02778ea3d6cfb3b5465132eca96c9c19a50e181cb4d19dc86217616a48ca",
+      "changeIds": ["L016", "L018", "L030", "L032"],
+      "upstreamCommit": "b37ebb7f22ec1a8fbf882366dc20ae6d6010a6e2",
+      "reason": "Contain fd child stdout and stderr stream failures at the autocomplete owner and order nested matches after shallower same-score matches. 提供方通过上下文回调控制自动触发，并通过 applyOnEnter 控制 Enter 是否填入候选。 命令参数候选标记阶段，接受命令后续查参数，并隔离参数回调失败。",
+      "behaviorImpact": "A failed background file-autocomplete scan returns no suggestions while the active MCode session remains usable, and direct paths remain visible when recursive results are abundant. Shell 补全只由 Tab 打开，菜单内输入继续过滤；Enter 执行当前输入，Tab 填入选中项。其他提供方沿用默认行为。 带参数候选的命令支持连续补全，参数 Enter 仅填入，Esc 保留草稿；无参数命令保持原行为。"
+    },
+    {
+      "path": "components/editor.ts",
+      "currentSha256": "0775a490df136d1083738cce649e026d6153ecb5480715b2c1104d51051968c5",
+      "changeIds": ["L005", "L009", "L022", "L030", "L032"],
+      "reason": "Keep strict TypeScript fixes and add the smallest generic snapshot, paste, telemetry, programmatic submission, undo-extension and empty-placeholder hooks needed by the MCode product wrapper. 提供方通过上下文回调控制自动触发，并通过 applyOnEnter 控制 Enter 是否填入候选。 强制补全上下文失效时立即取消请求并清空菜单。 支持单帧 placeholder 覆盖，由 Editor 统一保留 padding、可见光标和 IME 定位标记。 命令参数候选标记阶段，接受命令后续查参数，并隔离参数回调失败。",
+      "behaviorImpact": "MCode Draft, attachment, product-level submission-intent and empty-input guidance semantics use the canonical Pi Editor cursor, width, padding, history, undo, paste-marker and autocomplete behavior. Shell 补全只由 Tab 打开，菜单内输入继续过滤；Enter 执行当前输入，Tab 填入选中项。其他提供方沿用默认行为。 删除 Shell 标记或命令名前缀后立即关闭候选；已取消请求的延迟结果无法恢复旧菜单。 带参数候选的命令支持连续补全，参数 Enter 仅填入，Esc 保留草稿；无参数命令保持原行为。"
+    },
+    {
+      "path": "components/input.ts",
+      "currentSha256": "1f316e66a18e1558767a1e1adb2b80672d2a57e34541aa2aafcb733bcc2490aa",
+      "changeIds": ["L008"],
+      "reason": "Add the smallest reusable prompt, paste transform, mask and cursor hooks required by product inputs.",
+      "behaviorImpact": "Search and decision inputs can suppress the Pi prompt, preserve single-line paste behavior and mask secrets without a second Input implementation."
+    },
+    {
+      "path": "components/loader.ts",
+      "currentSha256": "2f3dd7bc3ea9e7627f68b74632c56bf75066c39e80e71b129d52ea6ee5a23387",
+      "changeIds": ["L005"],
+      "reason": "Declare the inherited render override under the shared MCode strict TypeScript contract.",
+      "behaviorImpact": "none_intended"
+    },
+    {
+      "path": "components/markdown.ts",
+      "currentSha256": "59eaf8bc4ef1c3a900892248fc3ab9a1483d18d84e63a888711c289f2bdf6e8d",
+      "changeIds": ["L005", "L007", "L013", "L029", "L026"],
+      "reason": "Keep strict TypeScript fixes and product Markdown hooks, plus Pi's post-baseline wrapped-table style restoration. 链接标签使用独立样式上下文，防止外层正文或标题颜色覆盖链接颜色。 稳定 Markdown 块缓存",
+      "behaviorImpact": "MCode keeps its compact code presentation without reimplementing Pi Markdown or leaking wrapped link styles into table borders and adjacent cells. 链接保留嵌套强调与行内代码，并在结束后恢复外层样式。 保留两个尾部块并对引用回退全文。"
+    },
+    {
+      "path": "components/settings-list.ts",
+      "currentSha256": "959f7db23190e0e526ca84c3032443d7d15248d891809f28c837cfa958692b5c",
+      "changeIds": ["L005"],
+      "reason": "Make modulo-bounded value access explicit under the shared MCode strict TypeScript contract.",
+      "behaviorImpact": "none_intended"
+    },
+    {
+      "path": "components/select-list.ts",
+      "currentSha256": "9785ec8f02553795487e836cc2cebf7c59a5e173c422ed349725c59dc021561d",
+      "changeIds": ["L008"],
+      "reason": "Add grouped Provider headings to replace the superseded MCode SelectList copy while retaining Pi filtering and single-line descriptions.",
+      "behaviorImpact": "MCode decision and picker lists retain Provider grouping while using Pi selection and single-line description behavior."
+    },
+    {
+      "path": "components/text.ts",
+      "currentSha256": "c5b976ffa596e9db3fb160bc6ab735cdf0ebad6a01a04a7bbd373a78eafb940e",
+      "changeIds": ["L013"],
+      "reason": "Adopt Pi's post-baseline adaptive horizontal padding for terminals narrower than the configured margins.",
+      "behaviorImpact": "Text rows stay within the terminal width instead of wrapping or corrupting the cursor in narrow panes."
+    },
+    {
+      "path": "index.ts",
+      "currentSha256": "a82c68598f45fbc8b24978399f0599529ed2f238bb22d7dcb82ad68cdae9b6a1",
+      "changeIds": ["L009", "L021"],
+      "reason": "Export the generic Editor state snapshot type and the terminal capability override helper through the product-facing Engine barrel.",
+      "behaviorImpact": "Product adapters can type serializable Pi Editor state and inject deterministic terminal capability behavior without importing Engine internals."
+    },
+    {
+      "path": "keybindings.ts",
+      "currentSha256": "19d60011a07509eaa1fe808a5856d7c29eb62c65f2001d7460b7ee79b202b976",
+      "changeIds": ["L005"],
+      "reason": "Make the exhaustive keybinding definition lookup explicit under the shared MCode strict TypeScript contract.",
+      "behaviorImpact": "none_intended"
+    },
+    {
+      "path": "keys.ts",
+      "currentSha256": "77f291399218bdc0fd849fb95c9c5dfc31ff9232516283e7f25781bef60a132f",
+      "changeIds": ["L024"],
+      "reason": "登记 /btw 侧会话快捷键所需的最小兼容改动：传统终端将 Ctrl+/ 编码为与 Ctrl+_ 相同的 0x1F。",
+      "behaviorImpact": "传统终端可匹配 Ctrl+/；kitty 和 modifyOtherKeys 终端继续使用可区分的键序列。"
+    },
+    {
+      "path": "latex.ts",
+      "currentSha256": "b4b4982ad3a5f10d05cecd4966c35032f2b5efedb4dc8cf7f819ceb614606d4c",
+      "changeIds": ["L005"],
+      "reason": "Make the parser-loop character invariant explicit under the shared MCode strict TypeScript contract.",
+      "behaviorImpact": "none_intended"
+    },
+    {
+      "path": "layout.ts",
+      "currentSha256": "e04ade3a681dcef926d877abf0505bdd2ebe92b6e4bff09f548675273dbbf3ce",
+      "changeIds": ["L011"],
+      "reason": "Expose the smallest generic layout-local mouse dispatch contract required when Pi Alt owns selection but product interaction components own click actions.",
+      "behaviorImpact": "The deepest visible layout component can consume press, drag and release events before Alt text selection starts."
+    },
+    {
+      "path": "native-modifiers.ts",
+      "currentSha256": "2629accc0254e1b2095aa0cfa9ed25bf057b8daf5383e6ff0bc40e21dac1cadb",
+      "changeIds": ["L014"],
+      "reason": "Resolve modifier helpers through the installed MCode package root before standalone archive fallbacks.",
+      "behaviorImpact": "Apple Terminal and Windows can load the packaged modifier helper even though Engine output is nested below dist/tui/engine."
+    },
+    {
+      "path": "native-module-path.ts",
+      "currentSha256": "3ccdf82cad479183dc88c8713aa027c2e4e0aa50bb041b6513209c60c50f468c",
+      "changeIds": ["L014"],
+      "reason": "Adapt Pi's post-baseline native module candidate resolver to the @minimax/code package layout.",
+      "behaviorImpact": "Installed npm packages and standalone archives share one deterministic native helper resolution path."
+    },
+    {
+      "path": "stdin-buffer.ts",
+      "currentSha256": "95e18c6c702fee39289c2221ddb54dfe7269812fa2f80223025d6a6df05d7e10",
+      "changeIds": ["L005"],
+      "reason": "Make the length-guarded final byte access explicit under the shared MCode strict TypeScript contract.",
+      "behaviorImpact": "none_intended"
+    },
+    {
+      "path": "terminal-colors.ts",
+      "currentSha256": "1214640bb22b2efb921d7639b9878ed571b6d50e29e412049b97a5ffada72684",
+      "changeIds": ["L005", "L023"],
+      "reason": "Make the matched OSC capture explicit under the shared MCode strict TypeScript contract, and add chunk-scanning extraction for OSC 11 replies and DEC 2031 color-scheme reports.",
+      "behaviorImpact": "An asynchronous terminal color answer is still recognized when it arrives coalesced with unrelated input."
+    },
+    {
+      "path": "terminal-image.ts",
+      "currentSha256": "c54d9299906afd66bf03fadbd5f83b74a878f001ab67d60f4b2a074c584952dc",
+      "changeIds": ["L005", "L021"],
+      "upstreamCommit": "e86823096c5bad39e1ca282ec24bc5eb9bec745b",
+      "reason": "Make validated binary offsets and regex captures explicit, and support Pi-compatible environment and host capability overrides.",
+      "behaviorImpact": "Terminal image, true-color and hyperlink behavior can be forced by a host or marked test environment while preserving conservative auto-detection by default."
+    },
+    {
+      "path": "terminal.ts",
+      "currentSha256": "3f53e011ddd18872691c9fe21d9f2309995a74eeb0a1f7f6023a9cc9e7b13553",
+      "changeIds": ["L014", "L028"],
+      "reason": "Use the package-aware native module resolver for Windows virtual-terminal input initialization. 终端焦点报告生命周期",
+      "behaviorImpact": "Packaged Windows builds retain modified-key escape sequences such as Shift+Tab instead of silently falling back to plain keys. 焦点报告转发给 Host，cmux 抑制策略仍归 Host。"
+    },
+    {
+      "path": "tui-alt-screen.ts",
+      "currentSha256": "dd8acaa441bab2e674e6cba946dcb130b97e51098adf158bda1f73bd027d7a4b",
+      "changeIds": ["L005", "L011", "L019", "L020", "L025", "L031"],
+      "upstreamCommit": "4e494929998d6bc4fccf75e0a233f727db4b70ee,1ac6128e66bd44668b58db773c2a76c29163ade5",
+      "reason": "Keep strict TypeScript fixes and layout-first mouse dispatch, join path and kebab-case word segments, and expose configurable fullscreen selection copying helpers. 活动搜索索引与命中复用 独立面板声明键盘分页归属。",
+      "behaviorImpact": "Fullscreen product interaction clicks and Pi-owned text selection coexist; double-click selects complete path-like tokens, and hosts can disable automatic copy or copy an active selection explicitly. 搜索交互复用索引。 handlesViewportKeys 为 true 时，fullscreen 分页交给焦点面板；默认仍由外层视口处理。"
+    },
+    {
+      "path": "tui-main-screen.ts",
+      "currentSha256": "146fd4222ae5a48d1f439de2f280b111789151a30c1bdd2735e32fff07329b9d",
+      "changeIds": ["L005", "L017", "L027", "L033", "L034"],
+      "upstreamCommit": "6c4f360264397c59801f6da2bdac13e3b1fcbe91",
+      "reason": "Keep strict TypeScript fixes and stream full and differential renders through Pi's bounded terminal writer. 缩放期间仅重绘可见尾部 常规模式在差分比较前剥离行首 OSC 133 zone 标记。 内容收缩或历史内容变化触发回退重绘时仅更新可见区域。",
+      "behaviorImpact": "Large regular-mode renders preserve output order without constructing a single V8-limited terminal string. 150ms 后及退出前重放完整投影历史。 内部导航标记不再写入终端，避免 iTerm2 左侧箭头和命令条噪声。 Session 结束后的状态更新不再发送 ESC 3J 清除原生滚动历史，当前视口仍显示最新内容。"
+    },
+    {
+      "path": "tui.ts",
+      "currentSha256": "0dee17d791b8f02fc26b28fe32506b036eb82761572dbcd378f2cac782a01798",
+      "changeIds": ["L005", "L015", "L023", "L027", "L028", "L031"],
+      "reason": "Keep strict TypeScript fixes, expose Pi's existing immediate scheduler as a non-destructive product interaction contract, and dispatch the input left over after terminal color sequences are removed. 提供 resize hook 及焦点输入过滤 独立面板声明键盘分页归属。",
+      "behaviorImpact": "Urgent product interactions render immediately without resetting differential state or clearing native scrollback, and a coalesced color answer no longer discards the keystrokes sharing its chunk. 焦点先交给 viewport listener，不进入编辑器。 handlesViewportKeys 为 true 时，fullscreen 分页交给焦点面板；默认仍由外层视口处理。"
+    },
+    {
+      "path": "utils.ts",
+      "currentSha256": "319b4615bcae5ae81bec9c38760713bd7981f58894b568cf08c7c45899346103",
+      "changeIds": ["L005"],
+      "reason": "Preserve Unicode Sets behavior through RegExp construction while compiling with the shared ES2022 target, and make bounded access explicit.",
+      "behaviorImpact": "none_intended"
+    },
+    {
+      "path": "public.ts",
+      "currentSha256": "f50b434a663debae58163927f41c70fbb4d2a948761db1ffaed1706c9df19010",
+      "changeIds": ["L003", "L006", "L008", "L011"],
+      "reason": "Provide the only product-facing Engine boundary and expose current Pi key, text, layout-frame and mouse utilities plus the recorded product input hooks.",
+      "behaviorImpact": "Product key, text, layout, mouse, Input and SelectList behavior, including regular feature viewport allocation, use the canonical Pi Engine implementation through one public barrel."
+    },
+    {
+      "path": "alt-screen-search.ts",
+      "changeIds": ["L025"],
+      "currentSha256": "5d4a8f5434bebe91e2fd01700bb331807ee9b9107ad96c33b730f663fae1e063",
+      "reason": "活动搜索索引与命中复用",
+      "behaviorImpact": "内容或宽度变化失效，避免重复 Unicode 映射。"
+    }
+  ]
+}

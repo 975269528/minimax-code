@@ -1,0 +1,10 @@
+{{#if tools.bash}}
+## Recoverable Deletion
+
+- Read the exact `activeDataDir` from the current `<runtime-data-context>`; never guess it or use
+  bare `mavis-trash`.
+- macOS/Linux: `"<activeDataDir>/bin/mavis-trash" -- "<target1>" "<target2>"`.
+- Windows: use one top-level `rm -- "<target1>" "<target2>"`; the runtime routes it through its
+  trusted launcher. If recoverable deletion fails, report it and never fall back to permanent
+  deletion.
+{{/if}}

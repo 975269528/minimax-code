@@ -1,0 +1,166 @@
+import { IncrementalSha256 } from './incremental-sha256.js';
+
+export interface SemanticSnapshot<T> {
+  readonly value: T;
+  readonly fingerprint: string;
+}
+
+/**
+ * Detach callback-owned History/event data before it becomes an in-run
+ * identity or deferred delivery payload. Unsupported or cyclic values fail
+ * closed. The digest is streamed so identity memory does not scale with the
+ * encoded payload size.
+ */
+export function captureSemanticSnapshot<T>(value: T): SemanticSnapshot<T> {
+  const snapshot = structuredClone(value);
+  const encoder = new SemanticIdentityEncoder(new IncrementalSha256());
+  encodeValue(snapshot, new WeakSet<object>(), encoder);
+  return {
+    value: freezeSemanticValue(snapshot, new WeakSet<object>()),
+    fingerprint: encoder.digest(),
+  };
+}
+
+/**
+ * Measures the streamed semantic representation without cloning or building
+ * a canonical string. Used only for already-detached replay results.
+ */
+export function estimateSemanticValueSize(value: unknown): number {
+  const encoder = new SemanticIdentityEncoder();
+  encodeValue(value, new WeakSet<object>(), encoder);
+  return encoder.byteSize;
+}
+
+class SemanticIdentityEncoder {
+  byteSize = 0;
+
+  constructor(private readonly hash?: IncrementalSha256) {}
+
+  frame(tag: string, payload: string): void {
+    this.write(`${Buffer.byteLength(tag)}:`);
+    this.write(tag);
+    this.write(`${Buffer.byteLength(payload)}:`);
+    this.write(payload);
+  }
+
+  digest(): string {
+    if (!this.hash) throw new Error('Semantic identity digest was not requested.');
+    return this.hash.digestHex();
+  }
+
+  private write(value: string): void {
+    this.byteSize += Buffer.byteLength(value);
+    this.hash?.update(value);
+  }
+}
+
+function freezeSemanticValue<T>(value: T, seen: WeakSet<object>): T {
+  if (typeof value !== 'object' || value === null || seen.has(value)) return value;
+  seen.add(value);
+  Reflect.ownKeys(value).forEach((key) => {
+    freezeSemanticValue(Reflect.get(value, key), seen);
+  });
+  return Object.freeze(value);
+}
+
+function encodeValue(
+  value: unknown,
+  ancestors: WeakSet<object>,
+  encoder: SemanticIdentityEncoder,
+): void {
+  if (encodePrimitive(value, encoder)) return;
+  if (typeof value !== 'object' || value === null) {
+    throw new TypeError(`Unsupported semantic identity value: ${typeof value}.`);
+  }
+  encodeObject(value, ancestors, encoder);
+}
+
+function encodePrimitive(value: unknown, encoder: SemanticIdentityEncoder): boolean {
+  if (value === null) {
+    encoder.frame('null', '');
+    return true;
+  }
+  switch (typeof value) {
+    case 'undefined':
+      encoder.frame('undefined', '');
+      return true;
+    case 'string':
+      encoder.frame('string', value);
+      return true;
+    case 'boolean':
+      encoder.frame('boolean', value ? 'true' : 'false');
+      return true;
+    case 'number':
+      encoder.frame('number', encodeNumber(value));
+      return true;
+    case 'object':
+      return false;
+    default:
+      throw new TypeError(`Unsupported semantic identity value: ${typeof value}.`);
+  }
+}
+
+function encodeNumber(value: number): string {
+  if (Number.isNaN(value)) return 'NaN';
+  if (value === Number.POSITIVE_INFINITY) return 'Infinity';
+  if (value === Number.NEGATIVE_INFINITY) return '-Infinity';
+  return Object.is(value, -0) ? '-0' : String(value);
+}
+
+function encodeObject(
+  value: object,
+  ancestors: WeakSet<object>,
+  encoder: SemanticIdentityEncoder,
+): void {
+  if (ancestors.has(value)) {
+    throw new TypeError('Cyclic semantic identity values are unsupported.');
+  }
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) encodeArray(value, ancestors, encoder);
+    else encodePlainObject(value, ancestors, encoder);
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function encodeArray(
+  values: readonly unknown[],
+  ancestors: WeakSet<object>,
+  encoder: SemanticIdentityEncoder,
+): void {
+  if (Object.getOwnPropertySymbols(values).length > 0) {
+    throw new TypeError('Symbol-keyed semantic identity values are unsupported.');
+  }
+  encoder.frame('begin', 'array');
+  encoder.frame('length', String(values.length));
+  Object.keys(values)
+    .sort()
+    .forEach((key) => {
+      encoder.frame('key', key);
+      encodeValue(Reflect.get(values, key), ancestors, encoder);
+    });
+  encoder.frame('end', 'array');
+}
+
+function encodePlainObject(
+  value: object,
+  ancestors: WeakSet<object>,
+  encoder: SemanticIdentityEncoder,
+): void {
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError('Semantic identity values must contain only plain objects and arrays.');
+  }
+  if (Object.getOwnPropertySymbols(value).length > 0) {
+    throw new TypeError('Symbol-keyed semantic identity values are unsupported.');
+  }
+  encoder.frame('begin', 'object');
+  Object.keys(value)
+    .sort()
+    .forEach((key) => {
+      encoder.frame('key', key);
+      encodeValue(Reflect.get(value, key), ancestors, encoder);
+    });
+  encoder.frame('end', 'object');
+}

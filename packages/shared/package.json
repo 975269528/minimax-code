@@ -1,0 +1,333 @@
+{
+  "name": "@mavis/shared",
+  "version": "0.2.1",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./dist/index.js"
+    },
+    "./mavis-tags": {
+      "types": "./src/mavis-tags.ts",
+      "import": "./dist/mavis-tags.js"
+    },
+    "./llm-error-classifier": {
+      "types": "./src/llm-error-classifier.ts",
+      "import": "./dist/llm-error-classifier.js"
+    },
+    "./navigation-text": {
+      "types": "./src/navigation-text.ts",
+      "import": "./dist/navigation-text.js"
+    },
+    "./source-citation-id": {
+      "types": "./src/source-citation-id.ts",
+      "import": "./dist/source-citation-id.js"
+    },
+    "./source-provenance": {
+      "types": "./src/source-provenance.ts",
+      "import": "./dist/source-provenance.js",
+      "default": "./dist/source-provenance.js"
+    },
+    "./file-source-citation": {
+      "types": "./src/file-source-citation.ts",
+      "import": "./dist/file-source-citation.js"
+    },
+    "./shell-source-stages": {
+      "types": "./src/shell-source-stages.ts",
+      "import": "./dist/shell-source-stages.js"
+    },
+    "./fetched-web-sources": {
+      "types": "./src/fetched-web-sources.ts",
+      "import": "./dist/fetched-web-sources.js"
+    },
+    "./models-dev": {
+      "types": "./src/models-dev.ts",
+      "import": "./dist/models-dev.js"
+    },
+    "./llm-retry-event": {
+      "types": "./src/llm-retry-event.ts",
+      "import": "./dist/llm-retry-event.js"
+    },
+    "./questionnaire": {
+      "types": "./src/questionnaire.ts",
+      "import": "./dist/questionnaire.js"
+    },
+    "./keyed-operation-lane": {
+      "types": "./src/keyed-operation-lane.ts",
+      "import": "./dist/keyed-operation-lane.js"
+    },
+    "./turn-identity": {
+      "types": "./src/turn-identity.ts",
+      "import": "./dist/turn-identity.js"
+    },
+    "./global-events": {
+      "types": "./src/global-events.ts",
+      "import": "./dist/global-events.js"
+    },
+    "./cron-model": {
+      "types": "./src/cron-model.ts",
+      "import": "./dist/cron-model.js"
+    },
+    "./cron-purpose": {
+      "types": "./src/cron-purpose.ts",
+      "import": "./dist/cron-purpose.js"
+    },
+    "./metrics-proxy": {
+      "types": "./src/metrics-proxy.ts",
+      "import": "./dist/metrics-proxy.js"
+    },
+    "./logging": {
+      "types": "./src/logging/index.ts",
+      "import": "./dist/logging/index.js"
+    },
+    "./mavis-widget-types": {
+      "types": "./src/mavis-widget-types.ts",
+      "import": "./dist/mavis-widget-types.js"
+    },
+    "./asset-markup": {
+      "types": "./src/asset-markup/index.ts",
+      "import": "./dist/asset-markup/index.js"
+    },
+    "./media-asset-meta": {
+      "types": "./src/media-asset-meta.ts",
+      "import": "./dist/media-asset-meta.js"
+    },
+    "./runtime-boundary-env": {
+      "types": "./src/runtime-boundary-env.ts",
+      "import": "./dist/runtime-boundary-env.js"
+    },
+    "./runtime-i18n": {
+      "types": "./src/runtime-i18n/index.ts",
+      "import": "./dist/runtime-i18n/index.js"
+    },
+    "./product-time": {
+      "types": "./src/product-time.ts",
+      "import": "./dist/product-time.js"
+    },
+    "./runtime-transport": {
+      "types": "./src/runtime-transport/index.ts",
+      "import": "./dist/runtime-transport/index.js",
+      "default": "./dist/runtime-transport/index.js"
+    },
+    "./eval-meta-info": {
+      "types": "./src/eval-meta-info.ts",
+      "import": "./dist/eval-meta-info.js",
+      "default": "./dist/eval-meta-info.js"
+    },
+    "./bounded-json-stringify": {
+      "types": "./src/bounded-json-stringify.ts",
+      "import": "./dist/bounded-json-stringify.js",
+      "default": "./dist/bounded-json-stringify.js"
+    },
+    "./subagent-roles": {
+      "types": "./src/subagent-roles.ts",
+      "import": "./dist/subagent-roles.js"
+    },
+    "./image-dimensions": {
+      "types": "./src/image-dimensions.ts",
+      "import": "./dist/image-dimensions.js"
+    },
+    "./daily-signin": {
+      "types": "./src/daily-signin.ts",
+      "import": "./dist/daily-signin.js"
+    },
+    "./miniapp-surface": {
+      "types": "./src/miniapp-surface.ts",
+      "import": "./dist/miniapp-surface.js"
+    },
+    "./agent-mention": {
+      "types": "./src/agent-mention/index.ts",
+      "import": "./dist/agent-mention/index.js"
+    },
+    "./agent-avatar": {
+      "types": "./src/agent-avatar.ts",
+      "import": "./dist/agent-avatar.js"
+    },
+    "./product-build-identity": {
+      "types": "./src/product-build-identity.ts",
+      "import": "./dist/product-build-identity.js",
+      "default": "./dist/product-build-identity.js"
+    },
+    "./local-runtime-logging": {
+      "types": "./src/local-runtime-logging/index.ts",
+      "import": "./dist/local-runtime-logging/index.js"
+    },
+    "./local-runtime-logging/logger": {
+      "types": "./src/local-runtime-logging/logger.ts",
+      "import": "./dist/local-runtime-logging/logger.js"
+    },
+    "./local-runtime-logging/im-logger": {
+      "types": "./src/local-runtime-logging/im-logger.ts",
+      "import": "./dist/local-runtime-logging/im-logger.js"
+    },
+    "./local-runtime-logging/metrics": {
+      "types": "./src/local-runtime-logging/metrics.ts",
+      "import": "./dist/local-runtime-logging/metrics.js"
+    },
+    "./local-runtime-paths": {
+      "types": "./src/local-runtime-paths.ts",
+      "import": "./dist/local-runtime-paths.js"
+    },
+    "./local-runtime-diagnostics": {
+      "types": "./src/local-runtime-diagnostics/index.ts",
+      "import": "./dist/local-runtime-diagnostics/index.js"
+    },
+    "./local-runtime-diagnostics/types": {
+      "types": "./src/local-runtime-diagnostics/types.ts",
+      "import": "./dist/local-runtime-diagnostics/types.js"
+    },
+    "./local-runtime-diagnostics/event-sink": {
+      "types": "./src/local-runtime-diagnostics/event-sink.ts",
+      "import": "./dist/local-runtime-diagnostics/event-sink.js"
+    },
+    "./local-runtime-diagnostics/redaction": {
+      "types": "./src/local-runtime-diagnostics/redaction.ts",
+      "import": "./dist/local-runtime-diagnostics/redaction.js"
+    },
+    "./local-runtime-diagnostics/jsonl-file-sink": {
+      "types": "./src/local-runtime-diagnostics/jsonl-file-sink.ts",
+      "import": "./dist/local-runtime-diagnostics/jsonl-file-sink.js"
+    },
+    "./safety-check-v2": {
+      "types": "./src/safety-check-v2.ts",
+      "import": "./dist/safety-check-v2.js"
+    }
+  },
+  "types": "./src/index.ts",
+  "typesVersions": {
+    "*": {
+      "file-source-citation": [
+        "src/file-source-citation.ts"
+      ],
+      "shell-source-stages": [
+        "src/shell-source-stages.ts"
+      ],
+      "fetched-web-sources": [
+        "src/fetched-web-sources.ts"
+      ],
+      "logging": [
+        "src/logging/index.ts"
+      ],
+      "mavis-tags": [
+        "src/mavis-tags.ts"
+      ],
+      "llm-error-classifier": [
+        "src/llm-error-classifier.ts"
+      ],
+      "navigation-text": [
+        "src/navigation-text.ts"
+      ],
+      "models-dev": [
+        "src/models-dev.ts"
+      ],
+      "llm-retry-event": [
+        "src/llm-retry-event.ts"
+      ],
+      "questionnaire": [
+        "src/questionnaire.ts"
+      ],
+      "keyed-operation-lane": [
+        "src/keyed-operation-lane.ts"
+      ],
+      "turn-identity": [
+        "src/turn-identity.ts"
+      ],
+      "global-events": [
+        "src/global-events.ts"
+      ],
+      "cron-model": [
+        "src/cron-model.ts"
+      ],
+      "cron-purpose": [
+        "src/cron-purpose.ts"
+      ],
+      "desktop-service": [
+        "src/desktop-service.ts"
+      ],
+      "metrics-proxy": [
+        "src/metrics-proxy.ts"
+      ],
+      "mavis-widget-types": [
+        "src/mavis-widget-types.ts"
+      ],
+      "asset-markup": [
+        "src/asset-markup/index.ts"
+      ],
+      "media-asset-meta": [
+        "src/media-asset-meta.ts"
+      ],
+      "runtime-boundary-env": [
+        "src/runtime-boundary-env.ts"
+      ],
+      "runtime-i18n": [
+        "src/runtime-i18n/index.ts"
+      ],
+      "product-time": [
+        "src/product-time.ts"
+      ],
+      "runtime-transport": [
+        "src/runtime-transport/index.ts"
+      ],
+      "document-preview": [
+        "src/document-preview.ts"
+      ],
+      "eval-meta-info": [
+        "src/eval-meta-info.ts"
+      ],
+      "bounded-json-stringify": [
+        "src/bounded-json-stringify.ts"
+      ],
+      "comment-composer": [
+        "src/comment-composer.ts"
+      ],
+      "comment-anchor": [
+        "src/comment-anchor.ts"
+      ],
+      "comment-marker": [
+        "src/comment-marker.ts"
+      ],
+      "subagent-roles": [
+        "src/subagent-roles.ts"
+      ],
+      "image-dimensions": [
+        "src/image-dimensions.ts"
+      ],
+      "daily-signin": [
+        "src/daily-signin.ts"
+      ],
+      "miniapp-surface": [
+        "src/miniapp-surface.ts"
+      ],
+      "agent-mention": [
+        "src/agent-mention/index.ts"
+      ],
+      "agent-avatar": [
+        "src/agent-avatar.ts"
+      ],
+      "keyboard-shortcuts": [
+        "src/keyboard-shortcuts/index.ts"
+      ],
+      "product-build-identity": [
+        "src/product-build-identity.ts"
+      ],
+      "source-provenance": [
+        "src/source-provenance.ts"
+      ],
+      "safety-check-v2": [
+        "src/safety-check-v2.ts"
+      ]
+    }
+  },
+  "dependencies": {
+    "pino": "^10",
+    "pino-pretty": "^11"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@vitest/coverage-v8": "^2",
+    "typescript": "^5",
+    "vitest": "^2"
+  },
+  "private": true,
+  "license": "MIT"
+}

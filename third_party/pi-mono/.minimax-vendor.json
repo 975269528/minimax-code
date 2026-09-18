@@ -1,0 +1,15 @@
+{
+  "name": "pi-mono",
+  "type": "third-party-source-vendor",
+  "owner": "MiniMax",
+  "upstream": {
+    "type": "git",
+    "url": "https://github.com/earendil-works/pi-mono.git",
+    "ref": "refs/tags/v0.79.1",
+    "commit": "28df940f0d07b65284849a483be7b06e2ca046ee"
+  },
+  "importedAt": "2026-06-16",
+  "strategy": "source-vendor",
+  "localChangeLog": "MINIMAX_CHANGES.md",
+  "policy": "../AGENTS.md"
+}

@@ -1,0 +1,17 @@
+name: Documentation issue
+description: Report missing, incorrect, or unclear documentation.
+title: "[Docs] "
+body:
+  - type: input
+    id: location
+    attributes:
+      label: Documentation URL or path
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and suggested improvement
+      description: Which step was unclear, or which command failed? Remove keys and account details.
+    validations:
+      required: true

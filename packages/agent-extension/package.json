@@ -1,0 +1,33 @@
+{
+  "name": "@mavis/agent-extension",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Built-in adapters that connect Mavis agent modules to the host-neutral @mavis/agent-runtime SPI.",
+  "type": "module",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@mavis/session-report": "workspace:^",
+    "@mavis/agent-runtime": "workspace:^",
+    "@mavis/context-manager": "workspace:^",
+    "@mavis/permission": "workspace:^",
+    "@mavis/runaway-guard": "workspace:^",
+    "@mavis/skills": "workspace:^",
+    "@mavis/system-reminder": "workspace:^",
+    "@sinclair/typebox": "^0.34.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-agent-core": "workspace:*",
+    "@earendil-works/pi-ai": "workspace:*",
+    "@mavis/protocol": "workspace:^",
+    "@types/node": "^20",
+    "typescript": "^5",
+    "vitest": "^2"
+  },
+  "license": "MIT"
+}

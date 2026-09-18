@@ -1,0 +1,228 @@
+import type { GlobalEvent } from '@mavis/shared/global-events';
+import { isLegacyManagedMinimaxProvider } from '@mavis/config';
+
+import type {
+  CodexOAuthManager,
+  LocalModelProviderService,
+  ModelSystemOwner,
+  ModelProviderView,
+  UserModelInputView,
+} from '../../service/model-system/index.js';
+import { watchGlobalEvents, watchProcessEvents } from '../events.js';
+import type { ModelProviderApplication } from './model-provider-application.js';
+import type { LocalRuntimeApplication } from './process-local-application-contract.js';
+import type { SessionReportCapability } from '../../service/session-system/index.js';
+
+export interface ProcessLocalApplicationOptions {
+  readonly eventBus: {
+    subscribe(subscriber: { next(event: GlobalEvent): void }): () => void;
+  };
+  readonly usageCommits?: {
+    subscribe(listener: (sessionId: string) => void): () => void;
+  };
+  readonly skills: LocalRuntimeApplication['skills'];
+  readonly plugins: LocalRuntimeApplication['plugins'];
+  readonly miniApps?: LocalRuntimeApplication['miniApps'];
+  readonly workspace: NonNullable<LocalRuntimeApplication['workspace']>;
+  readonly plan: NonNullable<LocalRuntimeApplication['plan']>;
+  readonly sessionReports?: SessionReportCapability;
+  readonly instructions?: LocalRuntimeApplication['instructions'];
+  readonly modelProvider: {
+    readonly application: Pick<ModelProviderApplication, 'list' | 'select'>;
+    readonly providers: LocalModelProviderService;
+    readonly listProviderPresets: ModelSystemOwner['listProviderPresets'];
+    readonly oauth: Pick<CodexOAuthManager, 'getStatus' | 'startLogin' | 'cancelLogin'>;
+  };
+  readonly peripherals: Required<
+    Pick<
+      LocalRuntimeApplication,
+      | 'mcp'
+      | 'goals'
+      | 'questionnaires'
+      | 'permissions'
+      | 'account'
+      | 'diagnostics'
+      | 'configuration'
+      | 'backgroundTasks'
+    >
+  >;
+}
+
+/** Composes peripheral product capabilities for process-local delivery. */
+export function createProcessLocalApplication(
+  options: ProcessLocalApplicationOptions,
+): LocalRuntimeApplication {
+  const sessionReports = options.sessionReports;
+  return {
+    events: {
+      watch: (signal) =>
+        watchGlobalEvents((subscriber) => options.eventBus.subscribe({ next: subscriber }), signal),
+    },
+    ...(options.usageCommits
+      ? {
+          usage: {
+            watchCommits: (signal?: AbortSignal) =>
+              watchProcessEvents(
+                (subscriber) => options.usageCommits?.subscribe(subscriber) ?? (() => undefined),
+                signal,
+              ),
+          },
+        }
+      : {}),
+    skills: {
+      listSkills: (input) => options.skills.listSkills(input),
+      listRuntimeSkills: (input) => options.skills.listRuntimeSkills(input),
+    },
+    plugins: options.plugins,
+    ...(options.miniApps ? { miniApps: options.miniApps } : {}),
+    mcp: options.peripherals.mcp,
+    goals: options.peripherals.goals,
+    questionnaires: options.peripherals.questionnaires,
+    plan: options.plan,
+    backgroundTasks: options.peripherals.backgroundTasks,
+    permissions: options.peripherals.permissions,
+    account: {
+      getStatus: async (input) => {
+        let status = await options.peripherals.account.getStatus(input);
+        if (isLegacyManagedMinimaxProvider(selectedProviderId(status) ?? '')) {
+          const selected = (await options.modelProvider.application.list(input)).find(
+            (model) => model.selected,
+          );
+          if (selected?.providerId === 'minimax') {
+            status = {
+              ...status,
+              selection: {
+                defaultModel: `minimax/${selected.modelId}`,
+                providerId: selected.providerId,
+                modelId: selected.modelId,
+              },
+              provider: {
+                id: selected.providerId,
+                authMode: selected.providerKind === 'minimax-managed' ? 'managed-login' : 'api-key',
+              },
+            };
+          }
+        }
+        if (selectedProviderId(status) !== 'minimax') return status;
+        const source = options.modelProvider.providers.getMinimaxModelSource();
+        return {
+          ...status,
+          modelSource: source === 'minimax_api_key' ? 'byok' : 'token-plan',
+        };
+      },
+    },
+    diagnostics: {
+      getRuntimeSnapshot: () => options.peripherals.diagnostics.getRuntimeSnapshot(),
+      ...(sessionReports
+        ? {
+            collectSessionReport: (sessionId: string) => sessionReports.collect(sessionId),
+          }
+        : {}),
+    },
+    ...(options.instructions ? { instructions: options.instructions } : {}),
+    configuration: options.peripherals.configuration,
+    models: {
+      list: (request = {}) => options.modelProvider.application.list(request),
+      select: (request) => options.modelProvider.application.select(request),
+    },
+    modelProviders: {
+      listProviderPresets: () => options.modelProvider.listProviderPresets(),
+      getCodexOAuthStatus: async () => options.modelProvider.oauth.getStatus(),
+      startCodexOAuthLogin: (input) => options.modelProvider.oauth.startLogin(input),
+      cancelCodexOAuthLogin: async (loginId) => options.modelProvider.oauth.cancelLogin(loginId),
+      listUser: async () =>
+        options.modelProvider.providers.listUserProviders().map(toProviderRecord),
+      getMiniMaxApiKeyStatus: async () => options.modelProvider.providers.getMinimaxApiKeyStatus(),
+      getMiniMaxModelSource: async () => options.modelProvider.providers.getMinimaxModelSource(),
+      setMiniMaxModelSource: async ({ source }) => {
+        await options.modelProvider.providers.setMinimaxModelSource(source);
+        return source;
+      },
+      upsertMiniMaxApiKey: async (request) =>
+        options.modelProvider.providers.upsertMinimaxApiKey(request),
+      create: async ({ models, ...request }) =>
+        options.modelProvider.providers.createUserProvider({
+          ...request,
+          ...(models ? { models: toUserModelInputs(models) } : {}),
+        }),
+      discoverCandidate: (candidate) =>
+        options.modelProvider.providers.discoverUserModelsCandidate(candidate),
+      saveCandidate: async ({ candidate: { models, ...candidate }, ...request }) => {
+        const outcome = await options.modelProvider.providers.saveUserModelProviderCandidate({
+          ...request,
+          candidate: {
+            ...candidate,
+            ...(models ? { models: toUserModelInputs(models) } : {}),
+          },
+        });
+        return {
+          success: outcome.ok,
+          ...(outcome.status ? { status: { ...outcome.status } } : {}),
+          ...(outcome.provider ? { provider: toProviderRecord(outcome.provider) } : {}),
+        };
+      },
+      update: async ({ models, ...request }) =>
+        options.modelProvider.providers.updateUserProvider({
+          ...request,
+          ...(models ? { models: toUserModelInputs(models) } : {}),
+        }),
+      delete: ({ providerId }) =>
+        options.modelProvider.providers.deleteUserProvider({ providerId }),
+      testProvider: async ({ providerId }) => {
+        const outcome = await options.modelProvider.providers.testProvider(providerId);
+        return { success: outcome.ok, status: outcome.status };
+      },
+      testModel: async ({ providerId, modelId }) => {
+        const outcome = await options.modelProvider.providers.testModel(providerId, modelId);
+        return { success: outcome.ok, status: outcome.status };
+      },
+    },
+    workspace: options.workspace,
+  };
+}
+
+function selectedProviderId(status: Record<string, unknown>): string | undefined {
+  const selection = asRecord(status.selection);
+  const provider = asRecord(status.provider);
+  if (typeof selection?.providerId === 'string') {
+    return selection.providerId;
+  }
+  return typeof provider?.id === 'string' ? provider.id : undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function toProviderRecord(provider: ModelProviderView): Record<string, unknown> {
+  return { ...provider };
+}
+
+function toUserModelInputs(
+  models: readonly {
+    modelId: string;
+    displayName?: string;
+    configurationSource?: string;
+    enabled?: boolean;
+    attachment?: boolean;
+    reasoning?: boolean;
+    toolCall?: boolean;
+    temperature?: boolean;
+    modalities?: { input?: readonly string[]; output?: readonly string[] };
+    limit?: { context?: number; output?: number };
+  }[],
+): UserModelInputView[] {
+  return models.map(({ modalities, ...model }) => ({
+    ...model,
+    ...(modalities
+      ? {
+          modalities: {
+            ...(modalities.input ? { input: [...modalities.input] } : {}),
+            ...(modalities.output ? { output: [...modalities.output] } : {}),
+          },
+        }
+      : {}),
+  }));
+}

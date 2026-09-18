@@ -1,0 +1,197 @@
+import type { AgentMessage } from '@earendil-works/pi-agent-core';
+import type {} from '@earendil-works/pi-coding-agent';
+
+import {
+  appendCompactionState,
+  readCompactionCompatibility,
+  type CompactionSubagentState,
+  type CompactionUserQuery,
+} from '../compat.js';
+import { ContextCompactionError, type CheckpointGenerationMetadata } from '../contracts.js';
+import { projectTodoHistory } from './todo-cadence.js';
+import { projectBackgroundHistory } from './background-cadence.js';
+
+const CHECKPOINT_HEADINGS = [
+  'Goal',
+  'Constraints & Preferences',
+  'Completed Work',
+  'Current State',
+  'Blockers',
+  'Key Decisions',
+  'Pending User Asks',
+  'Critical Context & Relevant Files',
+] as const;
+
+export interface CheckpointGeneration extends CheckpointGenerationMetadata {
+  readonly text: string;
+}
+
+export interface ValidCheckpointGeneration {
+  readonly summary: string;
+  readonly schemaStatus: 'exact' | 'soft_fallback';
+}
+
+export interface CheckpointMessageOptions {
+  readonly timestamp: number;
+  readonly subagents?: CompactionSubagentState;
+}
+
+export function validateCheckpointGeneration(
+  generation: CheckpointGeneration,
+  maxOutputTokens: number,
+): ValidCheckpointGeneration {
+  if (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 0) {
+    throw new TypeError('Checkpoint maxOutputTokens must be a non-negative safe integer.');
+  }
+  if (isHardInvalidGeneration(generation, maxOutputTokens)) {
+    throw invalidCheckpoint('Checkpoint LLM returned a non-terminal or oversized response.');
+  }
+  const summary = generation.text.trim();
+  if (!summary) throw invalidCheckpoint('Checkpoint LLM returned an empty response.');
+  return {
+    summary,
+    schemaStatus: hasExactCheckpointSections(summary) ? 'exact' : 'soft_fallback',
+  };
+}
+
+function isHardInvalidGeneration(
+  generation: CheckpointGeneration,
+  maxOutputTokens: number,
+): boolean {
+  return (
+    (generation.stopReason !== 'stop' && generation.stopReason !== 'length') ||
+    generation.responseContentKinds.some((kind) => kind === 'toolCall' || kind === 'unknown') ||
+    !Number.isSafeInteger(generation.outputTokens) ||
+    generation.outputTokens < 0 ||
+    generation.outputTokens > maxOutputTokens ||
+    typeof generation.text !== 'string'
+  );
+}
+
+function hasExactCheckpointSections(summary: string): boolean {
+  const firstHeading = `## ${CHECKPOINT_HEADINGS[0]}`;
+  if (!summary.startsWith(`${firstHeading}\n`) && !summary.startsWith(`${firstHeading}\r\n`)) {
+    return false;
+  }
+  const matches = [...summary.matchAll(/^## ([^\r\n]+)\r?\n([\s\S]*?)(?=^## |(?![\s\S]))/gmu)];
+  if (matches.length !== CHECKPOINT_HEADINGS.length) return false;
+  return CHECKPOINT_HEADINGS.every((heading, index) => {
+    const match = matches[index];
+    return match?.[1] === heading && Boolean(match[2]?.trim());
+  });
+}
+
+export function buildCheckpointMessage(
+  h0: readonly AgentMessage[],
+  summary: string,
+  tokensBefore: number,
+  options: CheckpointMessageOptions,
+): AgentMessage {
+  if (!Number.isSafeInteger(tokensBefore) || tokensBefore < 0) {
+    throw new TypeError('Checkpoint tokensBefore must be a non-negative safe integer.');
+  }
+  if (!Number.isFinite(options.timestamp)) {
+    throw new TypeError('Checkpoint timestamp must be finite.');
+  }
+  const previous = readCompactionCompatibility(h0[0]);
+  const state = buildVerifiedCheckpointState(
+    h0,
+    previous?.recentUserQueries ?? [],
+    options.subagents,
+  );
+  const checkpoint: AgentMessage = {
+    role: 'compactionSummary',
+    summary: appendCompactionState(summary, state),
+    tokensBefore,
+    timestamp: options.timestamp,
+  };
+  return checkpoint;
+}
+
+function buildVerifiedCheckpointState(
+  h0: readonly AgentMessage[],
+  inheritedQueries: readonly CompactionUserQuery[],
+  subagents: CompactionSubagentState | undefined,
+) {
+  const todo = projectTodoHistory(h0);
+  const background = projectBackgroundHistory(h0);
+  return {
+    recentUserQueries: collectRecentUserQueries(h0, inheritedQueries),
+    ...(todo.todoState === undefined ? {} : { todoState: todo.todoState }),
+    ...(todo.todoCadence === undefined ? {} : { todoCadence: todo.todoCadence }),
+    ...(background.hasBackgroundState
+      ? {
+          backgroundCadence: {
+            assistantIterationsSinceReminder: background.assistantIterationsSinceReminder,
+            ...(background.observedTerminalCount === undefined
+              ? {}
+              : { observedTerminalCount: background.observedTerminalCount }),
+          },
+        }
+      : {}),
+    ...(subagents === undefined ? {} : { subagents }),
+  };
+}
+
+function collectRecentUserQueries(
+  messages: readonly AgentMessage[],
+  inherited: readonly CompactionUserQuery[],
+): CompactionUserQuery[] {
+  const collected = [...inherited];
+  messages.forEach((message) => {
+    if (message.role !== 'user' || Reflect.get(message, 'archonCompaction')) return;
+    const text = readGenuineUserQueryText(message);
+    if (!text?.trim() || /^\/compact(?:\s|$)/iu.test(text.trim())) return;
+    const timestampMs = readFiniteNumber(message, 'timestamp');
+    collected.push({ text, ...(timestampMs === undefined ? {} : { timestampMs }) });
+  });
+  return collected.slice(-2);
+}
+
+export function readGenuineUserQueryText(message: AgentMessage): string | undefined {
+  if (Object.hasOwn(message, 'genuineUserQueryText')) {
+    const text = Reflect.get(message, 'genuineUserQueryText');
+    return typeof text === 'string' ? text : undefined;
+  }
+  if (!Object.hasOwn(message, 'canonicalTextRange')) return undefined;
+  return readCanonicalRangeText(message);
+}
+
+function readCanonicalRangeText(message: AgentMessage): string | undefined {
+  const content = readSingleText(message);
+  const range = Reflect.get(message, 'canonicalTextRange');
+  if (!content || !range || typeof range !== 'object') return undefined;
+  const startOffset = Reflect.get(range, 'startOffset');
+  const endOffset = Reflect.get(range, 'endOffset');
+  if (
+    !Number.isSafeInteger(startOffset) ||
+    !Number.isSafeInteger(endOffset) ||
+    startOffset < 0 ||
+    endOffset < startOffset ||
+    endOffset > content.length
+  ) {
+    return undefined;
+  }
+  return content.slice(startOffset, endOffset);
+}
+
+function readSingleText(message: AgentMessage): string | undefined {
+  const content = Reflect.get(message, 'content');
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return undefined;
+  const texts = content.flatMap((block) =>
+    block && typeof block === 'object' && Reflect.get(block, 'type') === 'text'
+      ? [Reflect.get(block, 'text')]
+      : [],
+  );
+  return texts.length === 1 && typeof texts[0] === 'string' ? texts[0] : undefined;
+}
+
+function readFiniteNumber(value: object, key: string): number | undefined {
+  const field = Reflect.get(value, key);
+  return typeof field === 'number' && Number.isFinite(field) ? field : undefined;
+}
+
+function invalidCheckpoint(message: string): ContextCompactionError {
+  return new ContextCompactionError('INVALID_CHECKPOINT', 'llm_checkpoint', message);
+}

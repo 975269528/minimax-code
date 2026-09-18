@@ -1,0 +1,382 @@
+{
+  "extends": "./tsconfig.node.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@earendil-works/pi-agent-core": [
+        "./third_party/pi-mono/packages/agent/src/index.ts"
+      ],
+      "@earendil-works/pi-agent-core/node": [
+        "./third_party/pi-mono/packages/agent/src/node.ts"
+      ],
+      "@earendil-works/pi-agent-core/package.json": [
+        "./third_party/pi-mono/packages/agent/package.json"
+      ],
+      "@earendil-works/pi-ai": [
+        "./third_party/pi-mono/packages/ai/src/index.ts"
+      ],
+      "@earendil-works/pi-ai/anthropic": [
+        "./third_party/pi-mono/packages/ai/src/providers/anthropic.ts"
+      ],
+      "@earendil-works/pi-ai/azure-openai-responses": [
+        "./third_party/pi-mono/packages/ai/src/providers/azure-openai-responses.ts"
+      ],
+      "@earendil-works/pi-ai/bedrock-provider": [
+        "./third_party/pi-mono/packages/ai/src/bedrock-provider.ts"
+      ],
+      "@earendil-works/pi-ai/google": [
+        "./third_party/pi-mono/packages/ai/src/providers/google.ts"
+      ],
+      "@earendil-works/pi-ai/google-vertex": [
+        "./third_party/pi-mono/packages/ai/src/providers/google-vertex.ts"
+      ],
+      "@earendil-works/pi-ai/mistral": [
+        "./third_party/pi-mono/packages/ai/src/providers/mistral.ts"
+      ],
+      "@earendil-works/pi-ai/oauth": [
+        "./third_party/pi-mono/packages/ai/src/oauth.ts"
+      ],
+      "@earendil-works/pi-ai/openai-codex-responses": [
+        "./third_party/pi-mono/packages/ai/src/providers/openai-codex-responses.ts"
+      ],
+      "@earendil-works/pi-ai/openai-completions": [
+        "./third_party/pi-mono/packages/ai/src/providers/openai-completions.ts"
+      ],
+      "@earendil-works/pi-ai/openai-responses": [
+        "./third_party/pi-mono/packages/ai/src/providers/openai-responses.ts"
+      ],
+      "@earendil-works/pi-coding-agent": [
+        "./third_party/pi-mono/packages/coding-agent/src/index.ts"
+      ],
+      "@earendil-works/pi-tui": [
+        "./third_party/pi-mono/packages/tui/src/index.ts"
+      ],
+      "@mavis/agent-core": [
+        "./packages/agent-core/src/index.ts"
+      ],
+      "@mavis/agent-core/bash-subprocess-env": [
+        "./packages/agent-core/src/bash-subprocess-env.ts"
+      ],
+      "@mavis/agent-core/event-bridge": [
+        "./packages/agent-core/src/event-bridge/index.ts"
+      ],
+      "@mavis/agent-core/pi-turn-runner": [
+        "./packages/agent-core/src/pi-turn-runner/index.ts"
+      ],
+      "@mavis/agent-core/prompt-read": [
+        "./packages/agent-core/src/prompt-read.ts"
+      ],
+      "@mavis/agent-core/protocol": [
+        "./packages/agent-core/src/protocol/index.ts"
+      ],
+      "@mavis/agent-core/protocol/agent-message": [
+        "./packages/agent-core/src/protocol/agent-message.ts"
+      ],
+      "@mavis/agent-core/protocol/runtime-event": [
+        "./packages/agent-core/src/protocol/runtime-event.ts"
+      ],
+      "@mavis/agent-core/tools": [
+        "./packages/agent-core/src/tools/index.ts"
+      ],
+      "@mavis/agent-extension": [
+        "./packages/agent-extension/src/index.ts"
+      ],
+      "@mavis/agent-runtime": [
+        "./packages/agent-runtime/src/index.ts"
+      ],
+      "@mavis/agent-tools": [
+        "./packages/agent-tools/src/index.ts"
+      ],
+      "@mavis/agent-tools/desktop": [
+        "./packages/agent-tools/src/desktop/index.ts"
+      ],
+      "@mavis/agent-tools/desktop/managed-routing": [
+        "./packages/agent-tools/src/desktop/managed-routing.ts"
+      ],
+      "@mavis/agent-tools/desktop/subagent-roles": [
+        "./packages/agent-tools/src/desktop/subagent-roles.ts"
+      ],
+      "@mavis/agent-tools/matrix": [
+        "./packages/agent-tools/src/cloud/matrix-tools/index.ts"
+      ],
+      "@mavis/agent-tools/plugin-hooks": [
+        "./packages/agent-tools/src/plugin-hooks/index.ts"
+      ],
+      "@mavis/agent-tools/read-contract": [
+        "./packages/agent-tools/src/shared/read-contract.ts"
+      ],
+      "@mavis/background-task": [
+        "./packages/agent-modules/background-task/src/index.ts"
+      ],
+      "@mavis/browser-core": [
+        "./packages/browser-core/src/index.ts"
+      ],
+      "@mavis/config": [
+        "./packages/config/src/index.ts"
+      ],
+      "@mavis/config/cu-backend": [
+        "./packages/config/src/cu-backend.ts"
+      ],
+      "@mavis/config/data-dir": [
+        "./packages/config/src/data-dir.ts"
+      ],
+      "@mavis/config/sandbox-settings": [
+        "./packages/config/src/sandbox-settings.ts"
+      ],
+      "@mavis/context-manager": [
+        "./packages/agent-modules/context-manager/src/index.ts"
+      ],
+      "@mavis/conversation-contract": [
+        "./packages/agent-modules/conversation-contract/src/index.ts"
+      ],
+      "@mavis/cron": [
+        "./packages/agent-modules/cron/src/index.ts"
+      ],
+      "@mavis/goal": [
+        "./packages/agent-modules/goal/src/index.ts"
+      ],
+      "@mavis/local-runtime": [
+        "./packages/local-runtime/src/index.ts"
+      ],
+      "@mavis/local-runtime-v2": [
+        "./packages/local-runtime-v2/src/index.ts"
+      ],
+      "@mavis/local-runtime-v2/agent": [
+        "./packages/local-runtime-v2/src/service/agent/public.ts"
+      ],
+      "@mavis/local-runtime-v2/canonical-history": [
+        "./packages/local-runtime-v2/src/infra/file/canonical-history.ts"
+      ],
+      "@mavis/local-runtime-v2/cli-service": [
+        "./packages/local-runtime-v2/src/local/index.ts"
+      ],
+      "@mavis/local-runtime-v2/logging": [
+        "./packages/local-runtime-v2/src/infra/logging/index.ts"
+      ],
+      "@mavis/local-runtime-v2/process-local": [
+        "./packages/local-runtime-v2/src/local/host-contract.ts"
+      ],
+      "@mavis/local-runtime-v2/session-system": [
+        "./packages/local-runtime-v2/src/service/session-system/index.ts"
+      ],
+      "@mavis/local-runtime-v2/turn-system": [
+        "./packages/local-runtime-v2/src/service/turn-system/index.ts"
+      ],
+      "@mavis/mcode-tools-host": [
+        "./packages/mcode-tools-host/src/index.ts"
+      ],
+      "@mavis/mcp": [
+        "./packages/agent-modules/mcp/src/index.ts"
+      ],
+      "@mavis/mcp/runtime/connection-pool": [
+        "./packages/agent-modules/mcp/src/runtime/connection-pool.ts"
+      ],
+      "@mavis/mcp/runtime/transport/factory": [
+        "./packages/agent-modules/mcp/src/runtime/transport/factory.ts"
+      ],
+      "@mavis/mcp/runtime/transport/http": [
+        "./packages/agent-modules/mcp/src/runtime/transport/http.ts"
+      ],
+      "@mavis/mcp/runtime/transport/stdio": [
+        "./packages/agent-modules/mcp/src/runtime/transport/stdio.ts"
+      ],
+      "@mavis/mcp/runtime/types": [
+        "./packages/agent-modules/mcp/src/runtime/types.ts"
+      ],
+      "@mavis/oauth-core": [
+        "./packages/oauth-core/src/index.ts"
+      ],
+      "@mavis/oauth-lease-protocol": [
+        "./packages/oauth-lease-protocol/src/index.ts"
+      ],
+      "@mavis/permission": [
+        "./packages/agent-modules/permission/src/index.ts"
+      ],
+      "@mavis/plugin-hooks": [
+        "./packages/agent-modules/plugin-hooks/src/index.ts"
+      ],
+      "@mavis/protocol": [
+        "./packages/protocol/src/index.ts"
+      ],
+      "@mavis/protocol/local": [
+        "./packages/protocol/src/local.ts"
+      ],
+      "@mavis/runaway-guard": [
+        "./packages/agent-modules/runaway-guard/src/index.ts"
+      ],
+      "@mavis/session-report": [
+        "./packages/agent-modules/session-report/src/index.ts"
+      ],
+      "@mavis/shared": [
+        "./packages/shared/src/index.ts"
+      ],
+      "@mavis/shared/agent-avatar": [
+        "./packages/shared/src/agent-avatar.ts"
+      ],
+      "@mavis/shared/agent-mention": [
+        "./packages/shared/src/agent-mention/index.ts"
+      ],
+      "@mavis/shared/asset-markup": [
+        "./packages/shared/src/asset-markup/index.ts"
+      ],
+      "@mavis/shared/bounded-json-stringify": [
+        "./packages/shared/src/bounded-json-stringify.ts"
+      ],
+      "@mavis/shared/cron-model": [
+        "./packages/shared/src/cron-model.ts"
+      ],
+      "@mavis/shared/cron-purpose": [
+        "./packages/shared/src/cron-purpose.ts"
+      ],
+      "@mavis/shared/daily-signin": [
+        "./packages/shared/src/daily-signin.ts"
+      ],
+      "@mavis/shared/eval-meta-info": [
+        "./packages/shared/src/eval-meta-info.ts"
+      ],
+      "@mavis/shared/fetched-web-sources": [
+        "./packages/shared/src/fetched-web-sources.ts"
+      ],
+      "@mavis/shared/file-source-citation": [
+        "./packages/shared/src/file-source-citation.ts"
+      ],
+      "@mavis/shared/global-events": [
+        "./packages/shared/src/global-events.ts"
+      ],
+      "@mavis/shared/image-dimensions": [
+        "./packages/shared/src/image-dimensions.ts"
+      ],
+      "@mavis/shared/keyed-operation-lane": [
+        "./packages/shared/src/keyed-operation-lane.ts"
+      ],
+      "@mavis/shared/llm-error-classifier": [
+        "./packages/shared/src/llm-error-classifier.ts"
+      ],
+      "@mavis/shared/llm-retry-event": [
+        "./packages/shared/src/llm-retry-event.ts"
+      ],
+      "@mavis/shared/local-runtime-diagnostics": [
+        "./packages/shared/src/local-runtime-diagnostics/index.ts"
+      ],
+      "@mavis/shared/local-runtime-diagnostics/event-sink": [
+        "./packages/shared/src/local-runtime-diagnostics/event-sink.ts"
+      ],
+      "@mavis/shared/local-runtime-diagnostics/jsonl-file-sink": [
+        "./packages/shared/src/local-runtime-diagnostics/jsonl-file-sink.ts"
+      ],
+      "@mavis/shared/local-runtime-diagnostics/redaction": [
+        "./packages/shared/src/local-runtime-diagnostics/redaction.ts"
+      ],
+      "@mavis/shared/local-runtime-diagnostics/types": [
+        "./packages/shared/src/local-runtime-diagnostics/types.ts"
+      ],
+      "@mavis/shared/local-runtime-logging": [
+        "./packages/shared/src/local-runtime-logging/index.ts"
+      ],
+      "@mavis/shared/local-runtime-logging/im-logger": [
+        "./packages/shared/src/local-runtime-logging/im-logger.ts"
+      ],
+      "@mavis/shared/local-runtime-logging/logger": [
+        "./packages/shared/src/local-runtime-logging/logger.ts"
+      ],
+      "@mavis/shared/local-runtime-logging/metrics": [
+        "./packages/shared/src/local-runtime-logging/metrics.ts"
+      ],
+      "@mavis/shared/local-runtime-paths": [
+        "./packages/shared/src/local-runtime-paths.ts"
+      ],
+      "@mavis/shared/logging": [
+        "./packages/shared/src/logging/index.ts"
+      ],
+      "@mavis/shared/mavis-tags": [
+        "./packages/shared/src/mavis-tags.ts"
+      ],
+      "@mavis/shared/mavis-widget-types": [
+        "./packages/shared/src/mavis-widget-types.ts"
+      ],
+      "@mavis/shared/media-asset-meta": [
+        "./packages/shared/src/media-asset-meta.ts"
+      ],
+      "@mavis/shared/metrics-proxy": [
+        "./packages/shared/src/metrics-proxy.ts"
+      ],
+      "@mavis/shared/miniapp-surface": [
+        "./packages/shared/src/miniapp-surface.ts"
+      ],
+      "@mavis/shared/models-dev": [
+        "./packages/shared/src/models-dev.ts"
+      ],
+      "@mavis/shared/navigation-text": [
+        "./packages/shared/src/navigation-text.ts"
+      ],
+      "@mavis/shared/product-build-identity": [
+        "./packages/shared/src/product-build-identity.ts"
+      ],
+      "@mavis/shared/product-time": [
+        "./packages/shared/src/product-time.ts"
+      ],
+      "@mavis/shared/questionnaire": [
+        "./packages/shared/src/questionnaire.ts"
+      ],
+      "@mavis/shared/runtime-boundary-env": [
+        "./packages/shared/src/runtime-boundary-env.ts"
+      ],
+      "@mavis/shared/runtime-i18n": [
+        "./packages/shared/src/runtime-i18n/index.ts"
+      ],
+      "@mavis/shared/runtime-transport": [
+        "./packages/shared/src/runtime-transport/index.ts"
+      ],
+      "@mavis/shared/safety-check-v2": [
+        "./packages/shared/src/safety-check-v2.ts"
+      ],
+      "@mavis/shared/shell-source-stages": [
+        "./packages/shared/src/shell-source-stages.ts"
+      ],
+      "@mavis/shared/source-citation-id": [
+        "./packages/shared/src/source-citation-id.ts"
+      ],
+      "@mavis/shared/source-provenance": [
+        "./packages/shared/src/source-provenance.ts"
+      ],
+      "@mavis/shared/subagent-roles": [
+        "./packages/shared/src/subagent-roles.ts"
+      ],
+      "@mavis/shared/turn-identity": [
+        "./packages/shared/src/turn-identity.ts"
+      ],
+      "@mavis/skills": [
+        "./packages/agent-modules/skills/src/index.ts"
+      ],
+      "@mavis/system-reminder": [
+        "./packages/agent-modules/system-reminder/src/index.ts"
+      ],
+      "@minimax/code/package.json": [
+        "./packages/tui/package.json"
+      ],
+      "@minimax/mcode-sandbox-runtime": [
+        "./third_party/sandbox-runtime/src/index.ts"
+      ],
+      "@minimax/mcode-sandbox-runtime/dist/sandbox/sandbox-manager.js": [
+        "./third_party/sandbox-runtime/src/sandbox/sandbox-manager.ts"
+      ],
+      "@minimax/mcode-sandbox-runtime/package.json": [
+        "./third_party/sandbox-runtime/package.json"
+      ]
+    },
+    "lib": [
+      "ES2024"
+    ],
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
+    "target": "ES2024",
+    "noUncheckedIndexedAccess": false,
+    "noImplicitOverride": false
+  },
+  "include": [
+    "packages/tui/src/index.ts",
+    "packages/local-runtime/src/types/*.d.ts",
+    "third_party/pi-mono/packages/coding-agent/src/utils/*.d.ts"
+  ]
+}

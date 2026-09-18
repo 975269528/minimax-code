@@ -1,0 +1,50 @@
+# Minimax Code M1 data-generation baseline.
+# Run it with an isolated MINIMAX_DATA_DIR so user, workspace, Plugin, and
+# configured MCP state from a Desktop profile cannot enter the capability set.
+agents:
+  default:
+    persona:
+      enabled: false
+    tools: [read, write, edit, bash, grep, glob]
+    builtinTools: []
+    skills: []
+    features:
+      mavis: false
+      delegation: false
+      webSearch: false
+
+memory:
+  enabled: false
+  proactive: false
+
+askUser:
+  enabled: false
+
+skills:
+  external:
+    enabled: false
+
+skillEvolve:
+  enabled: false
+
+beta:
+  autoMemory: false
+  skillEvolve: false
+  skillEvolveBuiltinMr: false
+  skillProposal: false
+  browserBridge: false
+  filePanelBrowser: false
+  filePanelBrowserMultiTab: false
+  browserUseTooling: false
+  browserUseAutoOpenPanel: false
+  browserAgentCursor: false
+  desktopPlanMode: false
+  peek: false
+  keepAlive: false
+  promptOverride: false
+  cuMode: false
+  asr: false
+  taskHistoryProjectGrouping: false
+  threadGoal: false
+  mcodeTools: false
+  codexOAuth: false

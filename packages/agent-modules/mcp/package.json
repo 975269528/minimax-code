@@ -1,0 +1,45 @@
+{
+  "name": "@mavis/mcp",
+  "version": "0.2.1",
+  "description": "Shared MCP runtime substrate for Mavis agent runtimes. Uses the MCP SDK and host-local naming storage; never imports runtime packages.",
+  "type": "module",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./dist/index.js"
+    },
+    "./runtime/connection-pool": {
+      "types": "./src/runtime/connection-pool.ts",
+      "import": "./dist/runtime/connection-pool.js"
+    },
+    "./runtime/types": {
+      "types": "./src/runtime/types.ts",
+      "import": "./dist/runtime/types.js"
+    },
+    "./runtime/transport/factory": {
+      "types": "./src/runtime/transport/factory.ts",
+      "import": "./dist/runtime/transport/factory.js"
+    },
+    "./runtime/transport/http": {
+      "types": "./src/runtime/transport/http.ts",
+      "import": "./dist/runtime/transport/http.js"
+    },
+    "./runtime/transport/stdio": {
+      "types": "./src/runtime/transport/stdio.ts",
+      "import": "./dist/runtime/transport/stdio.js"
+    }
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "proper-lockfile": "^4"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "typescript": "^5",
+    "vitest": "^2",
+    "@types/proper-lockfile": "^4"
+  },
+  "private": true,
+  "license": "MIT"
+}

@@ -1,57 +1,48 @@
-name: Feature request / 功能建议
-description: Suggest an improvement for MiniMax Code desktop
+name: Feature request
+description: Suggest an improvement to the Desktop app, CLI, or source distribution.
 title: "[Feature]: "
 labels: ["enhancement"]
-
 body:
-  - type: markdown
+  - type: dropdown
+    id: product
     attributes:
-      value: |
-        Thanks for helping improve MiniMax Code. Please search existing issues before submitting.
-        感谢帮助我们改进 MiniMax Code。提交前请先搜索是否已有相关 Issue。
-
+      label: Product or interface
+      options:
+        - Desktop app
+        - CLI - interactive TUI
+        - CLI - headless
+        - CLI - ACP
+        - Source build or repository tooling
+    validations:
+      required: true
   - type: textarea
     id: problem
     attributes:
-      label: Problem / 你遇到的问题
-      description: What problem would this feature solve?
-      placeholder: "I often need to..."
+      label: Use case and problem
+      description: What are you trying to do, and what limits you today?
     validations:
       required: true
-
   - type: textarea
     id: proposal
     attributes:
-      label: Proposed solution / 期望方案
-      description: What would you like MiniMax Code to do?
-      placeholder: "I would like MiniMax Code to..."
+      label: Desired behavior
+      description: Include an interaction example or acceptance criteria.
     validations:
       required: true
-
   - type: dropdown
     id: platform
     attributes:
-      label: Platform / 平台
+      label: Platform
       options:
         - macOS
         - Windows
-        - Linux desktop support
-        - All desktop platforms
+        - Linux
+        - WSL
+        - Multiple platforms
     validations:
-      required: false
-
+      required: true
   - type: textarea
-    id: context
+    id: alternatives
     attributes:
-      label: Additional context / 补充信息
-      description: Add screenshots, examples, or related workflows if helpful.
-    validations:
-      required: false
-
-  - type: checkboxes
-    id: checklist
-    attributes:
-      label: Before submitting / 提交前确认
-      options:
-        - label: I have searched existing issues.
-          required: true
+      label: Alternatives and additional context
+      description: Include what you tried and any relevant examples without private project content.
