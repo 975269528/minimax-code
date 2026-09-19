@@ -3288,6 +3288,7 @@
     "test/byok.test.mjs",
     "test/executable-resolution.test.ts",
     "test/network-deny.mjs",
+    "test/offline-environment.mjs",
     "test/public-artifact.test.mjs",
     "test/smoke.test.mjs",
     "test/source-sync.test.mjs",

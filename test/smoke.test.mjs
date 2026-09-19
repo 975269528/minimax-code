@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
+import { withoutProxyEnvironment } from "./offline-environment.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const cli = path.join(root, "dist/cli.js");
@@ -39,17 +40,7 @@ function fixture(t, environment = process.env) {
   return {
     cwd: dataDir,
     env: {
-      ...environment,
-      // Proxy setup installs undici.fetch over the preloaded offline mock.
-      // Keep host proxy settings out of these isolated test children.
-      HTTP_PROXY: "",
-      HTTPS_PROXY: "",
-      ALL_PROXY: "",
-      NO_PROXY: "",
-      http_proxy: "",
-      https_proxy: "",
-      all_proxy: "",
-      no_proxy: "",
+      ...withoutProxyEnvironment(environment),
       MINIMAX_DATA_DIR: dataDir,
       MAVIS_DATA_DIR: dataDir,
       MCODE_TEST_NETWORK_AUDIT: audit,

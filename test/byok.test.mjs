@@ -15,6 +15,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { parse as parseYaml } from "yaml";
+import { withoutProxyEnvironment } from "./offline-environment.mjs";
 
 const cli = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 // This fixture validates BYOK transport and real Runtime persistence, not model quality.
@@ -152,7 +153,6 @@ test(
     });
     const baseUrl = `http://127.0.0.1:${server.address().port}/v1`;
     const env = {
-      ...process.env,
       MINIMAX_DATA_DIR: dataDir,
       MAVIS_DATA_DIR: dataDir,
       MCODE_PROVIDER_API_KEY: "fixture-only-key",
@@ -161,12 +161,9 @@ test(
       MCODE_TEST_MANAGED_OFFLINE: "1",
       MCODE_TEST_PROCESS_PROBE: "1",
       NODE_OPTIONS: `--import=${new URL("./network-deny.mjs", import.meta.url).href}`,
-      HTTP_PROXY: "",
-      HTTPS_PROXY: "",
-      ALL_PROXY: "",
     };
     let commandSequence = 0;
-    async function run(args) {
+    async function run(args, environment = process.env) {
       const startedAt = Date.now();
       const label = args.slice(0, 2).join(" ");
       const requestCountAtStart = requests.length;
@@ -177,7 +174,7 @@ test(
       return new Promise((resolve, reject) => {
         const child = spawn(process.execPath, [cli, ...commandArgs], {
           cwd: dataDir,
-          env,
+          env: { ...withoutProxyEnvironment(environment), ...env },
           stdio: ["ignore", "pipe", "pipe"],
         });
         let stdout = "",
@@ -247,13 +244,45 @@ test(
       (p) => p.kind === "custom" && p.name === "Fixture",
     );
     assert.ok(selected?.hasApiKey);
-    await run([
-      "provider",
-      "test",
-      selected.providerId,
-      "--model",
-      "fixture-model",
-    ]);
+    const proxyNames = [
+      "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+      "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+    ];
+    const cleanEnvironment = Object.fromEntries(
+      Object.entries(process.env).filter(([name]) => !proxyNames.includes(name)),
+    );
+    const proxyValue = (name) => name.toLowerCase() === "no_proxy"
+      ? "*"
+      : "http://127.0.0.1:9";
+    for (const [label, proxies] of [
+      ["no proxy", {}],
+      ...proxyNames.map((name) => [name, { [name]: proxyValue(name) }]),
+      ["uppercase and lowercase together", Object.fromEntries(
+        proxyNames.map((name) => [name, proxyValue(name)]),
+      )],
+    ]) {
+      await t.test(`offline BYOK ignores ambient proxies: ${label}`, async () => {
+        const environment = Object.freeze({ ...cleanEnvironment, ...proxies });
+        // NO_PROXY alone does not enable proxy mode, so check its isolation explicitly.
+        const isolated = withoutProxyEnvironment(environment);
+        for (const name of proxyNames) assert.equal(isolated[name], "");
+        assert.equal(isolated.PATH, environment.PATH);
+        const beforeRequests = requests.length;
+        const managedAudit = `${networkAudit}.managed`;
+        const beforeManaged = readFileSync(managedAudit, "utf8").length;
+        await run([
+          "provider", "test", selected.providerId, "--model", "fixture-model",
+        ], environment);
+        assert.ok(requests.length > beforeRequests, "The local provider must receive the request");
+        assert.equal(requests[beforeRequests].body.model, "fixture-model");
+        assert.match(
+          readFileSync(managedAudit, "utf8").slice(beforeManaged),
+          /https:\/\/models\.dev\/api\.json|\/mavis\/api\/v1\/models-dev\/catalog/,
+        );
+        assert.equal(existsSync(networkAudit), false, "No outbound network attempt is allowed");
+        for (const [name, value] of Object.entries(proxies)) assert.equal(environment[name], value);
+      });
+    }
     const configPath = path.join(dataDir, "config.yaml");
     const savedConfig = () => parseYaml(readFileSync(configPath, "utf8"));
     assert.equal(savedConfig().defaultModel, "minimax/MiniMax-M3");
