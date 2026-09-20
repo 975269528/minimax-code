@@ -14,6 +14,175 @@ import { gzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
+import { cliBuildVersion, cliExternalModules, cliReleaseTargets, versionFromTag } from '../scripts/lib/cli-release.mjs';
+import { releaseManifest } from '../scripts/package-cli-release.mjs';
+import { validateReleaseReports } from '../scripts/publish-cli-release.mjs';
+import { compareVersions, releaseCli } from '../scripts/release-cli.mjs';
+
+test('release tags are canonical and must match both source versions without overriding them', t => {
+  for (const tag of ['v0.4.13', 'v1.0.0-rc.1', 'v0.0.0', 'v2.3.4-beta-test.0'])
+    assert.equal(versionFromTag(tag), tag.slice(1));
+  for (const tag of [undefined, '', '0.4.13', 'v01.2.3', 'v1.02.3', 'v1.2.03', 'v1.2.3-01', 'v1.2.3+build', 'v1.2.3\n', 'v1.2.3;echo bad', 'v1.2.3/../bad'])
+    assert.throws(() => versionFromTag(tag), /Release tag/);
+  const f = fixture(t);
+  mkdirSync(path.join(f.root, 'packages/tui'), { recursive: true });
+  const manifest = path.join(f.root, 'packages/tui/package.json');
+  writeFileSync(manifest, JSON.stringify({ version: '0.4.12', private: true }));
+  writeFileSync(path.join(f.root, 'package.json'), JSON.stringify({ version: '0.4.12', private: true }));
+  const before = readFileSync(manifest);
+  assert.equal(cliBuildVersion(f.root, 'v0.4.12'), '0.4.12');
+  assert.throws(() => cliBuildVersion(f.root, 'v0.4.13-rc.1'), /Release tag must match/);
+  assert.deepEqual(readFileSync(manifest), before);
+  writeFileSync(manifest, JSON.stringify({ version: '0.4.13' }));
+  assert.throws(() => cliBuildVersion(f.root, null), /Root and TUI/);
+});
+
+function cliReleaseFixture(t) {
+  const home = mkdtempSync(path.join(tmpdir(), 'cli-release-'));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const root = path.join(home, 'checkout'), remote = path.join(home, 'remote.git');
+  execFileSync('git', ['init', '--bare', remote], { stdio: 'ignore' });
+  execFileSync('git', ['init', '--initial-branch=main', root], { stdio: 'ignore' });
+  const git = (...args) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  git('config', 'user.name', 'Release Fixture'); git('config', 'user.email', 'release@example.invalid');
+  git('config', 'core.hooksPath', path.join(home, 'no-hooks'));
+  mkdirSync(path.join(root, 'packages/tui'), { recursive: true });
+  for (const name of ['package.json', 'packages/tui/package.json']) writeFileSync(path.join(root, name), JSON.stringify({ name: 'fixture', version: '1.2.3', private: true }, null, 2) + '\n');
+  git('add', '.'); git('commit', '-m', 'Fixture baseline'); git('remote', 'add', 'origin', remote); git('push', '-u', 'origin', 'main');
+  return { root, remote, git, base: git('rev-parse', 'HEAD') };
+}
+
+test('release command bumps source before tagging, pushes a release branch and opens its version PR', t => {
+  const f = cliReleaseFixture(t);
+  const prs = [];
+  const plan = releaseCli({ root: f.root, version: '1.2.4', dryRun: true });
+  assert.equal(plan.tag, 'v1.2.4');
+  assert.equal(f.git('status', '--porcelain'), '');
+  assert.equal(f.git('rev-parse', 'HEAD'), f.base);
+  const result = releaseCli({ root: f.root, version: '1.2.4', openPullRequest: request => prs.push(request) });
+  assert.equal(f.git('branch', '--show-current'), 'release/v1.2.4');
+  assert.equal(f.git('cat-file', '-t', 'v1.2.4'), 'tag');
+  assert.equal(f.git('rev-parse', 'v1.2.4^{commit}'), result.revision);
+  assert.equal(f.git('rev-parse', 'origin/main'), f.base);
+  assert.equal(f.git('rev-parse', 'origin/release/v1.2.4'), result.revision);
+  for (const name of ['package.json', 'packages/tui/package.json'])
+    assert.equal(JSON.parse(f.git('show', `v1.2.4:${name}`)).version, '1.2.4');
+  assert.equal(prs.length, 1);
+  assert.equal(prs[0].branch, 'release/v1.2.4');
+  assert.equal(f.git('ls-remote', 'origin', 'refs/heads/main').split('\t')[0], f.base);
+  assert.ok(f.git('ls-remote', 'origin', 'refs/tags/v1.2.4'));
+});
+
+test('release command rejects dirty trees, version regressions, stale bases and existing remote tags', t => {
+  const f = cliReleaseFixture(t);
+  const release = version => releaseCli({ root: f.root, version, dryRun: true });
+  for (const version of ['1.2.3', '1.2.2', '1.2.3-rc.1']) assert.throws(() => release(version), /must be newer/);
+  writeFileSync(path.join(f.root, 'untracked'), 'unfinished');
+  assert.throws(() => release('1.2.4'), /clean working tree/);
+  f.git('add', 'untracked'); f.git('commit', '-m', 'Unreviewed change');
+  assert.throws(() => release('1.2.4'), /latest origin\/main/);
+  f.git('switch', '--detach', f.base);
+  f.git('tag', 'v1.2.4'); f.git('push', 'origin', 'refs/tags/v1.2.4'); f.git('tag', '-d', 'v1.2.4');
+  assert.throws(() => release('1.2.4'), /already exists on origin/);
+  assert.equal(f.git('rev-parse', 'HEAD'), f.base);
+  assert.equal(f.git('status', '--porcelain'), '');
+  for (const [a, b] of [['1.2.4', '1.2.3'], ['1.2.4', '1.2.4-rc.1'], ['1.2.4-rc.10', '1.2.4-rc.2'], ['1.2.4-beta', '1.2.4-1']]) {
+    assert.equal(compareVersions(a, b), 1); assert.equal(compareVersions(b, a), -1);
+  }
+});
+
+test('rejected tag pushes cannot leave a partial remote release branch or open a version PR', { skip: process.platform === 'win32' }, t => {
+  const f = cliReleaseFixture(t);
+  execFileSync('git', ['--git-dir', f.remote, 'config', 'core.hooksPath', path.join(f.remote, 'hooks')]);
+  writeFileSync(path.join(f.remote, 'hooks/update'), '#!/bin/sh\ncase "$1" in refs/tags/*) exit 1 ;; esac\nexit 0\n', { mode: 0o755 });
+  let opened = false;
+  assert.throws(() => releaseCli({ root: f.root, version: '1.2.4', openPullRequest: () => { opened = true; } }));
+  assert.equal(opened, false);
+  assert.equal(f.git('ls-remote', 'origin', 'refs/tags/v1.2.4', 'refs/heads/release/v1.2.4'), '');
+  assert.equal(f.git('rev-parse', 'origin/main'), f.base);
+  assert.equal(f.git('rev-parse', 'v1.2.4^{commit}'), f.git('rev-parse', 'HEAD'));
+});
+
+test('npm release manifests require native SQLite and pin installed external dependencies', t => {
+  const f = fixture(t);
+  for (const name of cliExternalModules) {
+    const directory = path.join(f.root, 'node_modules', name);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(path.join(directory, 'package.json'), JSON.stringify({ name, version: '1.2.3' }));
+  }
+  const manifest = releaseManifest([f.root], '0.4.13');
+  assert.equal(manifest.version, '0.4.13');
+  assert.equal(manifest.private, true);
+  assert.equal(manifest.bin.mcode, 'cli.js');
+  assert.equal(manifest.dependencies['better-sqlite3'], '1.2.3');
+  assert.equal(manifest.dependencies['@vscode/ripgrep'], '1.2.3');
+  assert.equal(manifest.optionalDependencies['@mariozechner/clipboard'], '1.2.3');
+  assert.equal(manifest.scripts, undefined);
+  const conflicting = path.join(f.source, 'node_modules/better-sqlite3');
+  mkdirSync(conflicting, { recursive: true });
+  writeFileSync(path.join(conflicting, 'package.json'), JSON.stringify({ name: 'better-sqlite3', version: '9.9.9' }));
+  assert.throws(() => releaseManifest([f.root, f.source], '0.4.13'), /Expected one installed version/);
+});
+
+test('CLI publication requires every supported installation receipt for the exact archive and revision', t => {
+  const f = fixture(t);
+  const archive = path.join(f.root, 'minimax-code-0.4.13.tar.gz');
+  writeFileSync(archive, 'synthetic archive');
+  const sha256 = createHash('sha256').update(readFileSync(archive)).digest('hex');
+  writeFileSync(`${archive}.sha256`, `${sha256}  ${path.basename(archive)}\n`);
+  const revision = 'a'.repeat(40);
+  const reports = path.join(f.root, 'reports');
+  for (const target of cliReleaseTargets) {
+    const directory = path.join(reports, `cli-install-${target.os}-${target.node}`);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(path.join(directory, 'package-install.json'), JSON.stringify({
+      status: 'PASS', version: '0.4.13', revision, sha256,
+      platform: target.os.startsWith('ubuntu') ? 'linux' : 'darwin', node: `v${target.node}`,
+    }));
+    writeFileSync(path.join(directory, 'verification.json'), JSON.stringify({
+      status: 'PASS', profile: 'package', revision, gates: [{ name: 'test:release-package', status: 'PASS' }],
+    }));
+  }
+  const options = { archive, reports, version: '0.4.13', revision };
+  assert.equal(validateReleaseReports(options), sha256);
+  assert.throws(() => validateReleaseReports({ ...options, version: '0.4.14' }));
+  assert.throws(() => validateReleaseReports({ ...options, revision: 'b'.repeat(40) }));
+  const target = cliReleaseTargets.at(-1);
+  const receipt = path.join(reports, `cli-install-${target.os}-${target.node}`, 'package-install.json');
+  const original = readFileSync(receipt, 'utf8');
+  for (const override of [{ sha256: '0'.repeat(64) }, { status: 'FAIL' }, { node: 'v20.0.0' }]) {
+    writeFileSync(receipt, JSON.stringify({ ...JSON.parse(original), ...override }));
+    assert.throws(() => validateReleaseReports(options));
+  }
+  rmSync(receipt);
+  assert.throws(() => validateReleaseReports(options));
+  writeFileSync(receipt, original);
+  writeFileSync(archive, 'changed archive');
+  assert.throws(() => validateReleaseReports(options));
+});
+
+test('CLI release publishes only tag pushes after full verification and archive installation', () => {
+  const workflow = parseYaml(readFileSync(new URL('../.github/workflows/cli-release.yml', import.meta.url), 'utf8'));
+  assert.deepEqual(workflow.on.push, { tags: ['v*'] });
+  assert.equal(workflow.on.workflow_dispatch.inputs.tag.required, false);
+  assert.equal(workflow.permissions.contents, 'read');
+  assert.equal(workflow.concurrency['cancel-in-progress'], false);
+  assert.ok(workflow.jobs.build.steps.some(step => step.run === 'pnpm verify'));
+  assert.ok(workflow.jobs.build.steps.some(step => step.run?.includes('cliBuildVersion(process.cwd(), tag)')));
+  assert.deepEqual(workflow.jobs.publish.needs, ['build', 'install']);
+  assert.equal(workflow.jobs.publish.if, "github.event_name == 'push'");
+  assert.equal(workflow.jobs.publish.permissions.contents, 'write');
+  assert.equal(workflow.jobs.install.strategy.matrix, '${{ fromJSON(needs.build.outputs.matrix) }}');
+  const install = workflow.jobs.install.steps.find(step => step.run === 'pnpm verify --profile package');
+  assert.ok(install.env.MCODE_RELEASE_ARCHIVE.endsWith('.tar.gz'));
+  for (const job of Object.values(workflow.jobs)) {
+    for (const step of job.steps) {
+      if (step.uses && !step.uses.startsWith('./')) assert.match(step.uses, /@[a-f0-9]{40}$/);
+      if (step.uses?.startsWith('actions/checkout@')) assert.equal(step.with['persist-credentials'], false);
+      if (step.run) assert.doesNotMatch(step.run, /\$\{\{.*(?:inputs|github\.(?:ref|event))/);
+    }
+  }
+});
 import { runInNewContext } from 'node:vm';
 
 function fixture(t) {
@@ -194,6 +363,11 @@ test('documentation and archive profiles preserve their required validation gate
   const archive = f.run(['--profile', 'archive', '--list']);
   assert.equal(archive.status, 0, archive.stderr);
   assert.deepEqual(archive.stdout.trim().split('\n'), full.filter(g => g !== 'export source preview'));
+  const packageProfile = f.run(['--profile', 'package', '--list']);
+  if (['linux', 'darwin'].includes(process.platform)) {
+    assert.equal(packageProfile.status, 0, packageProfile.stderr);
+    assert.equal(packageProfile.stdout.trim(), 'test:release-package');
+  } else assert.notEqual(packageProfile.status, 0);
   const failure = f.run(['--profile', 'docs'], { VERIFY_FIXTURE_FAIL: 'check:source' });
   assert.equal(failure.status, 1);
   assert.equal(f.report().status, 'FAIL');
