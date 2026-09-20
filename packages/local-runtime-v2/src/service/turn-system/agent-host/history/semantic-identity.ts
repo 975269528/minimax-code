@@ -5,6 +5,9 @@ export interface SemanticSnapshot<T> {
   readonly fingerprint: string;
 }
 
+const ownedValues = new WeakSet<object>();
+const fingerprints = new WeakMap<object, string>();
+
 /**
  * Detach callback-owned History/event data before it becomes an in-run
  * identity or deferred delivery payload. Unsupported or cyclic values fail
@@ -12,12 +15,29 @@ export interface SemanticSnapshot<T> {
  * encoded payload size.
  */
 export function captureSemanticSnapshot<T>(value: T): SemanticSnapshot<T> {
-  const snapshot = structuredClone(value);
-  const encoder = new SemanticIdentityEncoder(new IncrementalSha256());
-  encodeValue(snapshot, new WeakSet<object>(), encoder);
+  // Clone an external graph in one operation: independent subtree clones can
+  // change aliasing and getter order. Reuse only an already-owned root.
+  const snapshot =
+    typeof value === 'object' && value !== null && ownedValues.has(value)
+      ? value
+      : freezeSemanticValue(structuredClone(value), new WeakSet<object>());
+  let fingerprint: string | undefined;
   return {
-    value: freezeSemanticValue(snapshot, new WeakSet<object>()),
-    fingerprint: encoder.digest(),
+    value: snapshot,
+    // Value-only consumers still validate and detach eagerly, but never encode
+    // or hash the history. Only values frozen by this module may be reused.
+    get fingerprint() {
+      if (fingerprint !== undefined) return fingerprint;
+      const object = typeof snapshot === 'object' && snapshot !== null ? snapshot : undefined;
+      fingerprint = object ? fingerprints.get(object) : undefined;
+      if (fingerprint === undefined) {
+        const encoder = new SemanticIdentityEncoder(new IncrementalSha256());
+        encodeValue(snapshot, new WeakSet<object>(), encoder);
+        fingerprint = encoder.digest();
+        if (object) fingerprints.set(object, fingerprint);
+      }
+      return fingerprint;
+    },
   };
 }
 
@@ -54,13 +74,28 @@ class SemanticIdentityEncoder {
   }
 }
 
-function freezeSemanticValue<T>(value: T, seen: WeakSet<object>): T {
-  if (typeof value !== 'object' || value === null || seen.has(value)) return value;
-  seen.add(value);
-  Reflect.ownKeys(value).forEach((key) => {
-    freezeSemanticValue(Reflect.get(value, key), seen);
-  });
-  return Object.freeze(value);
+function freezeSemanticValue<T>(value: T, ancestors: WeakSet<object>): T {
+  if (typeof value !== 'object' || value === null) {
+    if (!['undefined', 'string', 'boolean', 'number'].includes(typeof value) && value !== null) {
+      throw new TypeError(`Unsupported semantic identity value: ${typeof value}.`);
+    }
+    return value;
+  }
+  if (ownedValues.has(value)) return value;
+  if (ancestors.has(value)) throw new TypeError('Cyclic semantic identity values are unsupported.');
+  const prototype = Object.getPrototypeOf(value);
+  if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError('Semantic identity values must contain only plain objects and arrays.');
+  }
+  if (Object.getOwnPropertySymbols(value).length > 0) {
+    throw new TypeError('Symbol-keyed semantic identity values are unsupported.');
+  }
+  ancestors.add(value);
+  for (const key of Object.keys(value)) freezeSemanticValue(Reflect.get(value, key), ancestors);
+  ancestors.delete(value);
+  Object.freeze(value);
+  ownedValues.add(value);
+  return value;
 }
 
 function encodeValue(
