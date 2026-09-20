@@ -1448,6 +1448,8 @@ describe('LocalModelResolver custom provider compat overrides', () => {
   });
 
   it.each([
+    'https://api.siliconflow.cn/v1',
+    'https://api.siliconflow.com/v1',
     'https://dashscope.aliyuncs.com/compatible-mode/v1',
     'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
     'https://dashscope-us.aliyuncs.com/compatible-mode/v1',
@@ -1471,6 +1473,11 @@ describe('LocalModelResolver custom provider compat overrides', () => {
 
   it.each([
     ['https://api.openai.com/v1', 'developer'],
+    ['https://api.deepseek.com/v1', 'system'],
+    ['https://api.siliconflow.cn.example/v1', 'developer'],
+    ['https://gateway.example/api.siliconflow.cn/v1', 'developer'],
+    ['https://api.siliconflow.com.example/v1', 'developer'],
+    ['https://gateway.example/api.siliconflow.com/v1', 'developer'],
     ['https://api.moonshot.cn/v1', 'system'],
     ['https://api.moonshot.ai/v1', 'system'],
     ['https://dashscope.aliyuncs.com.example/v1', 'developer'],
@@ -1487,6 +1494,8 @@ describe('LocalModelResolver custom provider compat overrides', () => {
   });
 
   it.each([
+    'https://api.siliconflow.cn/v1',
+    'https://api.siliconflow.com/v1',
     'https://dashscope.aliyuncs.com/compatible-mode/v1',
     'https://coding.dashscope.aliyuncs.com/v1',
     'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
