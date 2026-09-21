@@ -4,6 +4,7 @@ import {
   canonicalHistoryRevision,
   CanonicalHistoryJsonlDataSource,
   decodeCanonicalHistoryEnvelope,
+  inspectCanonicalHistorySequence,
 } from '../packages/local-runtime-v2/src/infra/file/canonical-history-jsonl.js';
 import { canonicalJson } from '../packages/local-runtime-v2/src/infra/file/canonical-history-json-value.js';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -15,11 +16,18 @@ import { DatabaseClient } from '../packages/local-runtime-v2/src/infra/db/client
 import { initializeDatabase } from '../packages/local-runtime-v2/src/infra/db/initialize.js';
 import { queryCollapseViewStates } from '../packages/local-runtime-v2/src/infra/db/schema/query-collapse.js';
 import { turnIngress } from '../packages/local-runtime-v2/src/infra/db/schema/turn.js';
+import { sessions } from '../packages/local-runtime-v2/src/infra/db/schema/sessions.js';
+import { messageRows } from '../packages/local-runtime-v2/src/infra/db/schema/messages.js';
+import { createSessionRepository } from '../packages/local-runtime-v2/src/service/session-system/sessions/repo/drizzle.js';
+import { createMessageRepository } from '../packages/local-runtime-v2/src/service/session-system/messages/repo/drizzle.js';
 import { createQueryCollapseState } from '../packages/local-runtime-v2/src/service/session-system/query-collapse-state.js';
 import { createQueueTurnAdmissionPriorityFence } from '../packages/local-runtime-v2/src/service/session-system/index.js';
 import { createTurnRepository } from '../packages/local-runtime-v2/src/service/turn-system/persistence/turn.repository.js';
 import { IncrementalSha256 } from '../packages/local-runtime-v2/src/service/turn-system/agent-host/history/incremental-sha256.js';
-import { captureSemanticSnapshot } from '../packages/local-runtime-v2/src/service/turn-system/agent-host/history/semantic-identity.js';
+import {
+  captureSemanticSnapshot,
+  estimateSemanticValueSize,
+} from '../packages/local-runtime-v2/src/service/turn-system/agent-host/history/semantic-identity.js';
 import { DurableCanonicalHistoryStore } from '../packages/local-runtime-v2/src/service/turn-system/agent-host/history/durable-canonical-history-store.js';
 import type { CanonicalHistoryChange } from '../packages/local-runtime-v2/src/service/turn-system/agent-host/history/contracts.js';
 import { BpeTokenEstimator } from '../packages/agent-modules/context-manager/src/token-estimator.js';
@@ -48,6 +56,105 @@ describe('prepared runtime reads', () => {
       await rm(dataDir, { recursive: true, force: true });
     }
   }
+
+  it('keeps session lookups fresh and enforces the columnar version after reuse', async () => {
+    await withDatabase(async (client, writer) => {
+      const repository = createSessionRepository({ db: client.db });
+      expect(await repository.get('s1')).toBeUndefined();
+      for (const sessionId of ['s1', 's2']) {
+        await repository.create({
+          sessionId,
+          agentName: 'test',
+          workspaceDir: '/tmp',
+          runtime: 'pi-agent',
+          title: sessionId,
+        });
+      }
+      expect((await repository.get('s1'))?.title).toBe('s1');
+      expect((await repository.get('s2'))?.title).toBe('s2');
+      writer.db
+        .update(sessions)
+        .set({ title: 'updated' })
+        .where(eq(sessions.sessionId, 's1'))
+        .run();
+      expect((await repository.get('s1'))?.title).toBe('updated');
+      writer.db
+        .update(sessions)
+        .set({ columnarVersion: 2 })
+        .where(eq(sessions.sessionId, 's1'))
+        .run();
+      expect(await repository.get('s1')).toBeUndefined();
+      writer.db
+        .update(sessions)
+        .set({ columnarVersion: 3 })
+        .where(eq(sessions.sessionId, 's1'))
+        .run();
+      client.close();
+      const reopened = createSessionRepository({ db: client.db });
+      expect((await reopened.get('s1'))?.title).toBe('updated');
+      writer.db.delete(sessions).where(eq(sessions.sessionId, 's1')).run();
+      expect(await reopened.get('s1')).toBeUndefined();
+      expect(await reopened.get("s2' OR 1=1 --")).toBeUndefined();
+    });
+  });
+
+  it('keeps message and turn reads fresh, isolated and ordered after reuse', async () => {
+    await withDatabase(async (client, writer) => {
+      const sessionRepository = createSessionRepository({ db: client.db });
+      for (const sessionId of ['s1', 's2']) {
+        await sessionRepository.create({
+          sessionId,
+          agentName: 'test',
+          workspaceDir: '/tmp',
+          runtime: 'pi-agent',
+        });
+      }
+      const repository = createMessageRepository({ db: client.db });
+      const writerRepository = createMessageRepository({ db: writer.db });
+      expect(await repository.get('s1', 'm1')).toBeUndefined();
+      expect(await repository.listTurn('s1', 't1')).toEqual([]);
+      for (const [sessionId, turnId, msgId] of [
+        ['s1', 't1', 'm2'],
+        ['s1', 't1', 'm1'],
+        ['s1', 't2', 'm3'],
+        ['s2', 't1', 'm1'],
+      ]) {
+        await writerRepository.upsert({
+          sessionId: sessionId!,
+          turnId,
+          message: {
+            msg_id: msgId,
+            role: 'assistant',
+            text: `${sessionId}/${msgId}`,
+            timestamp: 1,
+          },
+        });
+      }
+      expect((await repository.listTurn('s1', 't1')).map((m) => m.msg_id)).toEqual(['m2', 'm1']);
+      expect((await repository.listTurn('s1', 't2')).map((m) => m.msg_id)).toEqual(['m3']);
+      expect((await repository.get('s2', 'm1'))?.text).toBe('s2/m1');
+      await writerRepository.upsert({
+        sessionId: 's1',
+        turnId: 't2',
+        message: {
+          msg_id: 'm1',
+          role: 'assistant',
+          text: 'updated',
+          timestamp: 2,
+        },
+      });
+      expect((await repository.get('s1', 'm1'))?.text).toBe('updated');
+      expect((await repository.listTurn('s1', 't1')).map((m) => m.msg_id)).toEqual(['m2']);
+      client.close();
+      const reopened = createMessageRepository({ db: client.db });
+      expect((await reopened.listTurn('s1', 't2')).map((m) => m.msg_id)).toEqual(['m1', 'm3']);
+      writer.db.delete(messageRows).where(eq(messageRows.sessionId, 's1')).run();
+      expect(await reopened.get('s1', 'm1')).toBeUndefined();
+      expect(await reopened.listTurn('s1', 't2')).toEqual([]);
+      expect(await reopened.get("s2' OR 1=1 --", 'm1')).toBeUndefined();
+      expect(await reopened.listTurn('s2', "t1' OR 1=1 --")).toEqual([]);
+    });
+  });
 
   it('keeps processing reads fresh across sessions, completion and another connection', async () => {
     await withDatabase(async (client, writer) => {
@@ -212,6 +319,43 @@ describe('streamed canonical history revisions', () => {
 });
 
 describe('semantic snapshots', () => {
+  it('preserves baseline digest bytes and replay byte counts for Unicode and special values', () => {
+    const sparse = new Array(12);
+    sparse[2] = undefined;
+    sparse[10] = '\ud800🙂';
+    Object.defineProperty(sparse, 'extra', {
+      value: '中文\udc00',
+      enumerable: true,
+    });
+    // Golden values from the pre-optimization encoder, including its framing.
+    const cases = [
+      {
+        value: {
+          z: '中文🙂\ud800',
+          a: [null, undefined, true, false, NaN, Infinity, -Infinity, -0, 0, 1.25],
+          ['\ud800']: 'tail\udc00',
+          ['__proto__']: { '10': true, '2': null },
+        },
+        fingerprint: 'f4961c05ea68951c93239df0af388afe47951d7e293f9982597bb9313723a1c8',
+        bytes: 436,
+      },
+      {
+        value: sparse,
+        fingerprint: 'b29cce838437e6e8aee783feba4a57bc3c58edd363e5b8abd51525bd07bc1df8',
+        bytes: 116,
+      },
+      {
+        value: 'a'.repeat(8191) + '🙂中\ud800' + 'b'.repeat(16385) + '\udc00',
+        fingerprint: 'b9a02642e610f3591d56337e788f7214c7d9ccbd51edf447bfd5539438b3c11f',
+        bytes: 24603,
+      },
+    ];
+    for (const { value, fingerprint, bytes } of cases) {
+      const snapshot = captureSemanticSnapshot(value);
+      expect(snapshot.fingerprint).toBe(fingerprint);
+      expect(estimateSemanticValueSize(snapshot.value)).toBe(bytes);
+    }
+  });
   it('detaches and freezes eagerly but hashes only when identity is requested', () => {
     const hash = vi.spyOn(IncrementalSha256.prototype, 'update');
     try {
@@ -237,6 +381,57 @@ describe('semantic snapshots', () => {
     } finally {
       hash.mockRestore();
     }
+  });
+  it('shares unchanged plain descendants without changing values, fingerprints or byte accounting', () => {
+    const before = captureSemanticSnapshot({ messages: [{ text: 'old', nested: [-0, undefined] }] });
+    const input = { messages: [{ text: 'old', nested: [-0, undefined] }, { text: 'new', nested: [1] }] };
+    const shared = captureSemanticSnapshot(input, before.value);
+    const independent = captureSemanticSnapshot(input);
+    expect(shared.value).toEqual(independent.value);
+    expect(shared.fingerprint).toBe(independent.fingerprint);
+    expect(estimateSemanticValueSize(shared.value)).toBe(estimateSemanticValueSize(independent.value));
+    expect(shared.value.messages[0]).toBe(before.value.messages[0]);
+    expect(shared.value.messages).not.toBe(before.value.messages);
+    input.messages[0]!.text = 'edited';
+    expect(shared.value.messages[0]!.text).toBe('old');
+    const edited = captureSemanticSnapshot(input, shared.value);
+    expect(edited.value.messages[0]).not.toBe(shared.value.messages[0]);
+    expect(edited.value.messages[1]).toBe(shared.value.messages[1]);
+  });
+  it('preserves split and merged aliases when sharing a previous snapshot', () => {
+    const alias = { text: 'same' };
+    const prior = captureSemanticSnapshot({ a: alias, b: alias }).value;
+    const split = captureSemanticSnapshot({ a: { text: 'same' }, b: { text: 'same' } }, prior).value;
+    expect(split.a).not.toBe(split.b);
+    const merged = captureSemanticSnapshot({ a: alias, b: alias }, split).value;
+    expect(merged.a).toBe(merged.b);
+    const mixed = captureSemanticSnapshot({ a: { text: 'same' }, b: prior.a }, prior).value;
+    expect(mixed.a).not.toBe(mixed.b);
+    expect(mixed.b).toBe(prior.a);
+    const mixedFirst = captureSemanticSnapshot({ a: prior.a, b: { text: 'same' } }, prior).value;
+    expect(mixedFirst.a).not.toBe(mixedFirst.b);
+  });
+  it('preserves key order, sparse arrays, negative zero and native accessor behavior during reuse', () => {
+    const prior = captureSemanticSnapshot({ a: 1, b: 2 }).value;
+    const reordered = captureSemanticSnapshot({ b: 2, a: 1 }, prior).value;
+    expect(Object.keys(reordered)).toEqual(['b', 'a']);
+    const sparse = new Array(3);
+    sparse[2] = -0;
+    const oldArray = captureSemanticSnapshot(sparse).value;
+    const nextArray = captureSemanticSnapshot([undefined, undefined, 0], oldArray).value;
+    expect(0 in nextArray).toBe(true);
+    expect(Object.is(nextArray[2], -0)).toBe(false);
+    expect(0 in oldArray).toBe(false);
+    const getter = vi.fn(() => 1);
+    expect(captureSemanticSnapshot({ get a() { return getter(); }, b: 2 }, prior).value).toEqual(prior);
+    expect(getter).toHaveBeenCalledTimes(1);
+    const trap = vi.fn();
+    expect(() => captureSemanticSnapshot(new Proxy({}, { ownKeys: trap }), prior)).toThrow();
+    expect(trap).not.toHaveBeenCalled();
+    const unsafe = Object.freeze({ nested: { text: 'old' } });
+    const snapshot = captureSemanticSnapshot({ nested: { text: 'old' } }, unsafe).value;
+    unsafe.nested.text = 'changed';
+    expect(snapshot.nested.text).toBe('old');
   });
   it('shares owned history through delivery wrappers and detaches other branches', () => {
     const history = captureSemanticSnapshot({
@@ -700,6 +895,28 @@ describe('committed history read reuse', () => {
     expect(empty.messages).not.toBe(empty.identityVector);
     expect(empty.messages).toEqual([]);
   });
+  it('shares immutable messages across fresh provider snapshots while observing edits and replacement', async () => {
+    let current = {
+      revision: 'r1',
+      messages: [{ role: 'user', timestamp: 1, content: 'old' }],
+      identityVector: ['msg-1'],
+    };
+    const read = async () => structuredClone(current);
+    const store = new DurableCanonicalHistoryStore({ read, readActive: read, append: read, replace: read });
+    const first = await store.read('synthetic-session');
+    current = { revision: 'r2', messages: [...current.messages, { role: 'user', timestamp: 2, content: 'new' }], identityVector: ['msg-1', 'msg-2'] };
+    const second = await store.read('synthetic-session');
+    expect(second.messages[0]).toBe(first.messages[0]);
+    expect(second.messages).toHaveLength(2);
+    current.messages[0]!.content = 'edited';
+    const third = await store.read('synthetic-session');
+    expect(third.messages[0]).not.toBe(second.messages[0]);
+    expect(third.messages[1]).toBe(second.messages[1]);
+    expect(second.messages[0]).toMatchObject({ content: 'old' });
+    current = { revision: 'r3', messages: [], identityVector: [] };
+    expect((await store.read('synthetic-session')).messages).toEqual([]);
+    expect(first.messages).toHaveLength(1);
+  });
   it('retains legacy rereads and rejects invalid commits or write failures', async () => {
     const readActive = vi.fn(async () => ({
       revision: 'r1',
@@ -726,5 +943,243 @@ describe('committed history read reuse', () => {
     append.mockRejectedValueOnce(new Error('write failed'));
     await expect(store.append(change)).rejects.toThrow('write failed');
     expect(readActive).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('owned decoded history rows', () => {
+  async function withReaders(
+    run: (path: string, reader: CanonicalHistoryJsonlDataSource) => Promise<void>,
+  ) {
+    const dir = await mkdtemp(join(tmpdir(), 'mcode-owned-rows-'));
+    const path = join(dir, 'messages.jsonl');
+    try {
+      await run(
+        path,
+        new CanonicalHistoryJsonlDataSource({
+          activePath: path,
+          reuseDecodedRecords: true,
+        }),
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+  const row = (id: string, content: unknown = '中文🙂\ud800') => ({
+    message_id: `msg-${id}`,
+    turn_id: `turn-${id}`,
+    message: { role: 'user', timestamp: 1, content },
+  });
+  const encode = (rows: unknown[]) => rows.map((value) => JSON.stringify(value)).join('\n') + '\n';
+
+  it('reuses unchanged rows across append while matching uncached revisions', async () => {
+    await withReaders(async (path, reader) => {
+      const records = [row('a'), row('b', { '2': 'two', z: [-0, null, true], __proto__: null })];
+      await writeFile(path, encode(records.slice(0, 1)));
+      const first = await reader.readActiveStrict();
+      const firstRevision = canonicalActiveHistoryRevision(first);
+      await reader.append([records[1]!], first);
+      const second = await reader.readActiveStrict();
+      expect(second[0]).toBe(first[0]);
+      const plain = await new CanonicalHistoryJsonlDataSource({
+        activePath: path,
+      }).readActiveStrict();
+      expect(second).toEqual(plain);
+      expect(canonicalActiveHistoryRevision(second)).toBe(canonicalActiveHistoryRevision(plain));
+      expect(canonicalHistoryRevision(second)).toBe(canonicalHistoryRevision(plain));
+      expect(canonicalActiveHistoryRevision(first)).toBe(firstRevision);
+      expect(Object.isFrozen(second[1]!.message.content)).toBe(true);
+    });
+  });
+
+  it('matches uncached UTF-8 replacement and CRLF decoding across appended rows', async () => {
+    await withReaders(async (path, reader) => {
+      const first = Buffer.from(JSON.stringify(row('a', '中文🙂X')) + '\r\n');
+      first[first.indexOf(Buffer.from('X'))] = 0xff;
+      await writeFile(path, first);
+      const initial = await reader.readActiveStrict();
+      const next = Buffer.concat([first, Buffer.from(JSON.stringify(row('b', '尾部🙂')))]);
+      await writeFile(path, next);
+      const cached = await reader.readActiveStrict();
+      const plain = await new CanonicalHistoryJsonlDataSource({ activePath: path }).readActiveStrict();
+      expect(cached[0]).toBe(initial[0]);
+      expect(cached).toEqual(plain);
+      expect(canonicalActiveHistoryRevision(cached)).toBe(canonicalActiveHistoryRevision(plain));
+      expect(cached[0]!.message.content).toBe('中文🙂\ufffd');
+    });
+  });
+
+  it('keeps private cached arrays immutable without exposing their state', async () => {
+    await withReaders(async (path, reader) => {
+      await writeFile(path, encode([row('a'), row('b')]));
+      const first = await reader.readActiveStrict();
+      expect(() => first.pop()).toThrow();
+      expect(() => { first[0] = row('replacement'); }).toThrow();
+      expect((await reader.readActiveStrict()).map(value => value.message_id)).toEqual(['msg-a', 'msg-b']);
+    });
+  });
+
+  it('reparses an unterminated final line and preserves the absolute error line', async () => {
+    await withReaders(async (path, reader) => {
+      const text = JSON.stringify(row('a'));
+      await writeFile(path, text);
+      await reader.readActiveStrict();
+      await writeFile(path, text + 'broken');
+      await expect(reader.readActiveStrict()).rejects.toThrow('line 1');
+      await writeFile(path, text + '\n' + JSON.stringify(row('b')) + '\n');
+      await reader.readActiveStrict();
+      await writeFile(path, text + '\n' + JSON.stringify(row('b')) + '\n{broken}\n');
+      await expect(reader.readActiveStrict()).rejects.toThrow('line 3');
+    });
+  });
+
+  it('keeps a reusable complete prefix when the history exceeds the cache budget', async () => {
+    await withReaders(async (path, reader) => {
+      const entries = [row('a', 'a'.repeat(2 * 1024 * 1024)), row('b', 'b'.repeat(2 * 1024 * 1024)), row('c')];
+      await writeFile(path, encode(entries));
+      const first = await reader.readActiveStrict();
+      const next = await reader.readActiveStrict();
+      expect(next[0]).toBe(first[0]);
+      expect(next).toEqual(first);
+      await writeFile(path, encode([entries[0], entries[1], row('d')]));
+      expect((await reader.readActiveStrict())[2]!.message_id).toBe('msg-d');
+    });
+  });
+
+  it('observes same-length edits, truncation, deletion and recreation', async () => {
+    await withReaders(async (path, reader) => {
+      await writeFile(path, encode([row('a', 'first')]));
+      const first = await reader.readActiveStrict();
+      const revision = canonicalActiveHistoryRevision(first);
+      await writeFile(path, encode([row('a', 'other')]));
+      const edited = await reader.readActiveStrict();
+      expect(edited[0]!.message.content).toBe('other');
+      expect(canonicalActiveHistoryRevision(edited)).not.toBe(revision);
+      await writeFile(path, '');
+      expect(await reader.readActiveStrict()).toEqual([]);
+      await rm(path);
+      await expect(reader.readActiveStrict()).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      await writeFile(path, encode([row('b')]));
+      expect((await reader.readActiveStrict())[0]!.message_id).toBe('msg-b');
+    });
+  });
+
+  it('still rejects corrupt and duplicate rows after warming the cache', async () => {
+    await withReaders(async (path, reader) => {
+      const valid = row('a');
+      await writeFile(path, encode([valid]));
+      await reader.readActiveStrict();
+      await writeFile(path, encode([valid, valid]));
+      await expect(reader.readActiveStrict()).rejects.toThrow('duplicate');
+      await writeFile(path, encode([valid]) + '{"message_id":"private-payload"\n');
+      await expect(reader.readActiveStrict()).rejects.toThrow('invalid JSON');
+      await writeFile(path, encode([valid]) + '\n');
+      await expect(reader.readActiveStrict()).rejects.toThrow('blank line');
+      await writeFile(path, encode([{ ...valid, message: { ...valid.message, timestamp: null } }]));
+      await expect(reader.readActiveStrict()).rejects.toThrow('timestamp');
+    });
+  });
+
+  it('checks pending and settled sequence rules on every cached read', async () => {
+    await withReaders(async (path, reader) => {
+      const pending = {
+        message_id: 'msg-assistant',
+        turn_id: 'turn-a',
+        message: {
+          role: 'assistant',
+          timestamp: 1,
+          content: [
+            {
+              type: 'toolCall',
+              id: 'call-a',
+              name: 'bash',
+              arguments: { command: 'pwd' },
+            },
+          ],
+        },
+      };
+      await writeFile(path, encode([pending]));
+      const records = await reader.readActiveStrict();
+      canonicalActiveHistoryRevision(records);
+      const inspection = inspectCanonicalHistorySequence(records);
+      if (inspection.status === 'pending-tool-results') {
+        (inspection.pendingToolCallIds as string[]).pop();
+      }
+      expect(inspectCanonicalHistorySequence(records)).toMatchObject({ pendingToolCallIds: ['call-a'] });
+      expect(() => canonicalHistoryRevision(records)).toThrow('tool results');
+      await expect(reader.readStrict()).rejects.toThrow('tool results');
+      expect((await reader.readActiveStrict())[0]).toBe(records[0]);
+      await writeFile(path, encode([pending, row('b')]));
+      await expect(reader.readActiveStrict()).rejects.toThrow();
+    });
+  });
+
+  it('does not trust caller-frozen records or leak mutable state from ordinary readers', async () => {
+    await withReaders(async (path) => {
+      const input = Object.freeze(row('a', { nested: ['original'] }));
+      const externallyFrozenArray = Object.freeze([input]);
+      const before = canonicalHistoryRevision(externallyFrozenArray);
+      (input.message.content as { nested: string[] }).nested[0] = 'changed';
+      expect(canonicalHistoryRevision(externallyFrozenArray)).not.toBe(before);
+      await writeFile(path, encode([input]));
+      const ordinary = new CanonicalHistoryJsonlDataSource({
+        activePath: path,
+      });
+      const first = await ordinary.readActiveStrict();
+      (first[0]!.message.content as { nested: string[] }).nested[0] = 'caller edit';
+      expect((await ordinary.readActiveStrict())[0]!.message.content).toEqual({
+        nested: ['changed'],
+      });
+    });
+  });
+
+  it('keeps default provider snapshots mutable and detached from its private rows', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'mcode-owned-provider-'));
+    try {
+      const session: SessionRecord = {
+        sessionId: 'owned-session',
+        agentName: 'test',
+        workspaceDir: dataDir,
+        runtime: 'pi-agent',
+        sessionType: 'root',
+        sessionKind: 'conversation',
+        archived: false,
+        status: 'idle',
+        createdAtMs: 0,
+        updatedAtMs: 0,
+        historyRelativeDir: utcSessionHistoryRelativeDir('owned-session', 0),
+      };
+      const provider = createSessionSystemCanonicalHistoryProvider({
+        dataDir,
+        sessions: { get: async () => session },
+      });
+      const input = {
+        role: 'user',
+        timestamp: 1,
+        content: [{ type: 'text', text: 'original' }],
+      };
+      const committed = await provider.append({
+        sessionId: session.sessionId,
+        turnId: 't1',
+        reason: 'messageDelta',
+        messages: [input],
+        operation: { id: 'a1', kind: 'append' },
+      });
+      input.content[0]!.text = 'caller input edit';
+      (committed.messages[0] as typeof input).content[0]!.text = 'caller output edit';
+      const next = await provider.readActive(session.sessionId);
+      expect((next.messages[0] as typeof input).content[0]!.text).toBe('original');
+      expect(next.revision).toBe(committed.revision);
+      const path = resolveSessionHistoryPaths(dataDir, session).messages;
+      await writeFile(path, encode([row('external', 'outside')]));
+      expect((await provider.readActive(session.sessionId)).messages[0]).toMatchObject({
+        content: 'outside',
+      });
+      await writeFile(path, '{bad}\n');
+      await expect(provider.readActive(session.sessionId)).rejects.toThrow();
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
+    }
   });
 });

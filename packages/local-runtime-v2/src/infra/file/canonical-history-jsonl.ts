@@ -6,6 +6,7 @@ import {
   readJsonl,
   writeJsonlAtomically,
   type JsonlMalformedLine,
+  type JsonlReadCache,
 } from './jsonl.js';
 import {
   decodeCanonicalHistoryArtifact,
@@ -23,6 +24,15 @@ export type {
   CanonicalHistorySourceSelection,
 } from './canonical-history-source.js';
 export type { CanonicalHistoryArtifact } from './canonical-history-artifact.js';
+
+// Only records decoded from file contents and recursively frozen here are trusted.
+const ownedEnvelopeJson = new WeakMap<CanonicalHistoryEnvelope, string | undefined>();
+const ownedRecordArrays = new WeakSet<readonly CanonicalHistoryEnvelope[]>();
+const ownedRevisions = new WeakMap<readonly CanonicalHistoryEnvelope[], string>();
+const ownedSequences = new WeakMap<
+  readonly CanonicalHistoryEnvelope[],
+  CanonicalHistorySequenceInspection
+>();
 
 const ENVELOPE_KEYS = new Set([
   'message_id',
@@ -268,6 +278,8 @@ export interface CanonicalHistoryEnvelope {
 
 export interface CanonicalHistoryJsonlDataSourceOptions {
   readonly activePath: string;
+  /** Internal readers may share frozen records; public readers retain detached values. */
+  readonly reuseDecodedRecords?: boolean;
   readonly onMalformedLine?: (line: JsonlMalformedLine) => void;
 }
 
@@ -294,6 +306,9 @@ export type CanonicalHistorySequenceInspection =
     };
 
 export function decodeCanonicalHistoryEnvelope(value: unknown): CanonicalHistoryEnvelope {
+  if (ownedEnvelopeJson.has(value as CanonicalHistoryEnvelope)) {
+    return value as CanonicalHistoryEnvelope;
+  }
   const envelope = requirePlainRecord(value, 'envelope');
   assertExactKeys(envelope, ENVELOPE_KEYS, ['message_id', 'turn_id', 'message'], 'envelope');
   assertJsonCompatible(envelope, 'envelope');
@@ -358,6 +373,8 @@ export function assertCanonicalHistorySequence(records: readonly CanonicalHistor
 export function inspectCanonicalHistorySequence(
   records: readonly CanonicalHistoryEnvelope[],
 ): CanonicalHistorySequenceInspection {
+  const cached = ownedSequences.get(records);
+  if (cached) return copyInspection(cached);
   const state: HistorySequenceState = {
     messageIds: new Set(),
     toolCallIds: new Set(),
@@ -371,14 +388,22 @@ export function inspectCanonicalHistorySequence(
     validateSequenceRecord(envelope, index, state);
   }
 
-  if (state.pendingToolCallIds && state.pendingToolCallIds.size > 0) {
-    return {
-      status: 'pending-tool-results',
-      settledPrefixLength: state.pendingToolCallStartIndex ?? records.length,
-      pendingToolCallIds: [...state.pendingToolCallIds],
-    };
-  }
-  return { status: 'settled' };
+  const inspection: CanonicalHistorySequenceInspection =
+    state.pendingToolCallIds && state.pendingToolCallIds.size > 0
+      ? {
+          status: 'pending-tool-results',
+          settledPrefixLength: state.pendingToolCallStartIndex ?? records.length,
+          pendingToolCallIds: [...state.pendingToolCallIds],
+        }
+      : { status: 'settled' };
+  if (ownedRecordArrays.has(records)) ownedSequences.set(records, copyInspection(inspection));
+  return inspection;
+}
+
+function copyInspection(value: CanonicalHistorySequenceInspection): CanonicalHistorySequenceInspection {
+  return value.status === 'settled'
+    ? { status: 'settled' }
+    : { ...value, pendingToolCallIds: [...value.pendingToolCallIds] };
 }
 
 /**
@@ -389,6 +414,8 @@ export function inspectCanonicalHistorySequence(
  * not provide a cross-process writer lock.
  */
 export class CanonicalHistoryJsonlDataSource {
+  private readonly readCache: JsonlReadCache<CanonicalHistoryEnvelope> = { bytes: Buffer.alloc(0), records: [] };
+
   constructor(private readonly options: CanonicalHistoryJsonlDataSourceOptions) {}
 
   async readActive(): Promise<CanonicalHistoryEnvelope[]> {
@@ -398,7 +425,7 @@ export class CanonicalHistoryJsonlDataSource {
   }
 
   async readActiveStrict(filePath = this.options.activePath): Promise<CanonicalHistoryEnvelope[]> {
-    const records = await readStrictEnvelopeFile(filePath);
+    const records = await this.readEnvelopesStrict(filePath);
     inspectCanonicalHistorySequence(records);
     return records;
   }
@@ -407,7 +434,11 @@ export class CanonicalHistoryJsonlDataSource {
   async readEnvelopesStrict(
     filePath = this.options.activePath,
   ): Promise<CanonicalHistoryEnvelope[]> {
-    return readStrictEnvelopeFile(filePath);
+    if (!this.options.reuseDecodedRecords) return readStrictEnvelopeFile(filePath);
+    const records = await readJsonl(filePath, decodeOwnedEnvelope, undefined, this.readCache);
+    Object.freeze(records);
+    ownedRecordArrays.add(records);
+    return records;
   }
 
   async readStrict(filePath = this.options.activePath): Promise<CanonicalHistoryEnvelope[]> {
@@ -555,6 +586,7 @@ function normalizeActiveRecords(
 }
 
 function decodeRecords(records: readonly CanonicalHistoryEnvelope[]): CanonicalHistoryEnvelope[] {
+  if (ownedRecordArrays.has(records)) return records as CanonicalHistoryEnvelope[];
   const decoded: CanonicalHistoryEnvelope[] = [];
   for (let index = 0; index < records.length; index += 1) {
     if (!Object.hasOwn(records, index)) invalidEnvelope(`records[${String(index)}] is sparse`);
@@ -564,14 +596,37 @@ function decodeRecords(records: readonly CanonicalHistoryEnvelope[]): CanonicalH
 }
 
 function revisionOfNormalized(records: readonly CanonicalHistoryEnvelope[]): string {
+  const cached = ownedRevisions.get(records);
+  if (cached !== undefined) return cached;
   // Preserve the canonical JSON array bytes without building a sorted copy and
   // serialized string of the entire history at once.
   const hash = createHash('sha256').update('[');
   for (let index = 0; index < records.length; index += 1) {
     if (index > 0) hash.update(',');
-    hash.update(canonicalJson(records[index]), 'utf8');
+    const record = records[index]!;
+    let serialized = ownedEnvelopeJson.get(record);
+    if (serialized === undefined) {
+      serialized = canonicalJson(record);
+      if (ownedEnvelopeJson.has(record)) ownedEnvelopeJson.set(record, serialized);
+    }
+    hash.update(serialized, 'utf8');
   }
-  return `sha256:${hash.update(']').digest('hex')}`;
+  const revision = `sha256:${hash.update(']').digest('hex')}`;
+  if (ownedRecordArrays.has(records)) ownedRevisions.set(records, revision);
+  return revision;
+}
+
+function decodeOwnedEnvelope(value: unknown): CanonicalHistoryEnvelope {
+  const record = decodeCanonicalHistoryEnvelope(value);
+  freezeDecodedJson(record);
+  ownedEnvelopeJson.set(record, undefined);
+  return record;
+}
+
+function freezeDecodedJson(value: unknown): void {
+  if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return;
+  for (const child of Object.values(value)) freezeDecodedJson(child);
+  Object.freeze(value);
 }
 
 function decodeMessage(value: unknown): CanonicalHistoryMessage {
