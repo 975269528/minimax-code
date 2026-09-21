@@ -131,3 +131,10 @@ Remove `L024` when the selected Pi baseline natively matches legacy-terminal `Ct
 - Boundary: this is a conservative fallback, not a replacement for bracketed paste. A standalone Enter and text followed only by a final Enter retain key semantics. Unframed pastes split into line-sized or character-sized chunks cannot be distinguished from typing and are not inferred using timing. Conversely, multiple typed lines delivered in a single chunk are indistinguishable from an unframed paste and use this fallback. Control sequences retain their existing parser.
 - Evidence: `test/unit/tui-terminal-text-paste.test.ts` replays ProcessTerminal input into the product Editor, including CR, LF, CRLF, Unicode, large pastes, every bracketed chunk split, Enter/shortcuts, and stop/start mode lifecycle. The CR and CRLF cases submitted three separate messages before the fix. These are synthetic input replays, not real WSL terminal acceptance.
 - Removal condition: the selected Pi baseline provides equivalent unframed multiline input handling.
+
+## L037: Commit the IME cursor with the regular-screen frame
+
+- Product contract: a presented frame exposes the focused input's cursor position and visibility, including full redraws, differential updates, and deletion-only frames.
+- Minimal difference: append cursor restoration to the bounded frame writer before ending synchronized output. Cursor-only updates retain the existing path. The product renderer separately defaults to a visible hardware cursor on Windows, where older ConPTY renderers can omit hidden cursor positions; explicit options and `PI_HARDWARE_CURSOR` remain authoritative.
+- Evidence: `test/unit/tui-ime-cursor.test.ts` replays terminal sequences at each synchronized-output boundary and exercises the product renderer, Composer, Editor, focus, mode switches, CJK wrapping, resize and shrink. Native Windows IME and ConPTY transport require separate acceptance.
+- Removal condition: the selected Pi baseline commits cursor restoration within the same synchronized frame.
