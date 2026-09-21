@@ -37,6 +37,10 @@ export interface MessageUpsertInput {
   readonly source?: string;
   readonly sourceContext?: Record<string, unknown>;
 }
+export interface MessageWriteOptions {
+  /** Cancels lock contention waits; immediately available cleanup writes still commit. */
+  readonly signal?: AbortSignal;
+}
 export interface UserMessageCommitInput extends MessageUpsertInput {
   readonly unconsumedFromTurnIds?: readonly string[];
   /** Trusted Queue startup lineage; the initial Host never read these rows. */
@@ -97,8 +101,11 @@ export interface MessageRepository {
     },
   ): Promise<DisplayMessageRecord[]>;
   commitUserMessage(input: UserMessageCommitInput): Promise<UserMessageCommitResult>;
-  upsert(input: MessageUpsertInput): Promise<NormalizedDisplayMessage>;
-  upsertMany(inputs: readonly MessageUpsertInput[]): Promise<readonly NormalizedDisplayMessage[]>;
+  upsert(input: MessageUpsertInput, options?: MessageWriteOptions): Promise<NormalizedDisplayMessage>;
+  upsertMany(
+    inputs: readonly MessageUpsertInput[],
+    options?: MessageWriteOptions,
+  ): Promise<readonly NormalizedDisplayMessage[]>;
   replace(input: MessageReplaceInput): Promise<void>;
   replaceStream(input: MessageReplaceStreamInput): Promise<void>;
   rewindInclusive(input: MessageRewindInclusiveInput): Promise<MessageRewindInclusiveResult>;
