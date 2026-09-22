@@ -20,6 +20,68 @@ import { validateReleaseReports } from '../scripts/publish-cli-release.mjs';
 import { compareVersions, releaseCli } from '../scripts/release-cli.mjs';
 import { compareRuns, exitCodeForStatus, renderReport, spread, validateRun, validateRequest, validateToolOutput, median, selectScenarios } from '../scripts/perf/report.mjs';
 import { copyMcodeToolsArtifact, downloadMcodeToolsArtifact, MCODE_TOOLS_ARTIFACT } from '../scripts/lib/mcode-tools-artifact.mjs';
+import { checkWindowsSourceLocation, runWindowsSourceLocationCheck } from '../scripts/check-windows-source-location.mjs';
+
+test('Windows source preflight accepts localized fsutil labels', () => {
+  const result = checkWindowsSourceLocation({
+    platform: 'win32',
+    cwd: 'C:\\repo',
+    execFile: (_command, args) => args[1] === 'drivetype'
+      ? 'Laufwerkstyp: DRIVE_FIXED\n'
+      : 'Dateisystemname: NTFS\n',
+  });
+  assert.deepEqual(result, { ok: true, skipped: false });
+});
+
+test('Windows source preflight requires a local NTFS checkout', () => {
+  const calls = [];
+  const execFile = (command, args) => {
+    calls.push([command, args]);
+    if (args[1] === 'drivetype') return 'Drive type is : DRIVE_FIXED\n';
+    return 'File System Name             : NTFS\n';
+  };
+  assert.deepEqual(
+    checkWindowsSourceLocation({ platform: 'win32', cwd: 'C:\\repo', execFile }),
+    { ok: true, skipped: false },
+  );
+  assert.deepEqual(calls.map(([command, args]) => [command, args[1], args[2]]), [
+    ['fsutil', 'drivetype', 'C:'],
+    ['fsutil', 'volumeinfo', 'C:'],
+  ]);
+});
+
+test('Windows source preflight rejects unsupported volumes clearly', () => {
+  const run = (driveType, volumeInfo, cwd = 'C:\\repo', allowNonFixed = false) => checkWindowsSourceLocation({
+    platform: 'win32', cwd, allowNonFixed,
+    execFile: (_command, args) => args[1] === 'drivetype' ? driveType : volumeInfo,
+  });
+  assert.match(run('Drive type is : DRIVE_REMOTE\n', 'File System Name : NTFS\n').reason, /not a local fixed drive/);
+  assert.deepEqual(
+    run('Drive type is : DRIVE_REMOTE\n', 'File System Name : NTFS\n', 'C:\\repo', true),
+    { ok: true, skipped: false },
+  );
+  assert.match(run('Drive type is : DRIVE_FIXED\n', 'File System Name : NTFS\n', '\\\\server\\share\\repo').reason, /not a local drive-letter path/);
+});
+
+test('Windows source preflight is a no-op on non-Windows platforms', () => {
+  assert.deepEqual(
+    checkWindowsSourceLocation({ platform: 'linux', execFile: () => assert.fail('must not run fsutil') }),
+    { ok: true, skipped: true },
+  );
+});
+
+test('Windows source preflight propagates a failed check to the CLI', () => {
+  const messages = [];
+  const result = runWindowsSourceLocationCheck({
+    platform: 'win32',
+    cwd: 'C:\\repo',
+    execFile: () => { throw new Error('fsutil unavailable'); },
+    report: (message) => messages.push(message),
+  });
+  assert.equal(result.ok, false);
+  assert.equal(messages.length, 1);
+  assert.match(messages[0], /fsutil unavailable/);
+});
 
 test('artifact download recovers from TLS reset and interrupted response bodies', async () => {
   const reset = new TypeError('fetch failed', { cause: Object.assign(new Error('connection reset'), { code: 'ECONNRESET' }) });
@@ -681,15 +743,18 @@ test('CI aggregate rejects failed, cancelled, missing and unexpectedly skipped c
     assert.notEqual(run({ ...full, DOCS_ONLY: scope }), 0);
 });
 
-test('ordinary CI pauses Windows without invoking release-only matrices', () => {
+test('ordinary CI runs a focused Windows contract while compatibility remains macOS/Linux', () => {
   const readWorkflow = name => parseYaml(readFileSync(new URL(`../.github/workflows/${name}.yml`, import.meta.url), 'utf8'));
   const ci = readWorkflow('ci');
   assert.ok(Object.hasOwn(ci.on, 'pull_request'));
   assert.deepEqual(ci.on.push.branches, ['main']);
   assert.deepEqual(Object.keys(ci.jobs).sort(), ['changes', 'docs', 'verification', 'verify']);
-  assert.deepEqual(ci.jobs.verify.strategy.matrix.os, ['ubuntu-latest', 'macos-latest']);
+  assert.deepEqual(ci.jobs.verify.strategy.matrix.os, ['ubuntu-latest', 'macos-latest', 'windows-latest']);
   assert.deepEqual(ci.jobs.verify.strategy.matrix.node, ['24']);
-  assert.deepEqual(ci.jobs.verify.strategy.matrix.include, [{ os: 'ubuntu-latest', node: '24', profile: 'full' }]);
+  assert.deepEqual(ci.jobs.verify.strategy.matrix.include, [
+    { os: 'ubuntu-latest', node: '24', profile: 'full' },
+    { os: 'windows-latest', node: '24', profile: 'windows' },
+  ]);
   assert.equal(ci.jobs.verify.needs, 'changes');
   assert.equal(ci.jobs.verify.if, "needs.changes.outputs.docs_only == 'false'");
   assert.equal(ci.jobs.docs.if, "needs.changes.outputs.docs_only == 'true'");
@@ -699,12 +764,11 @@ test('ordinary CI pauses Windows without invoking release-only matrices', () => 
   const compatibility = readWorkflow('compatibility');
   assert.deepEqual(Object.keys(compatibility.on).sort(), ['schedule', 'workflow_dispatch']);
   assert.deepEqual(compatibility.jobs.compatibility.strategy.matrix.node, ['22.19.0', '24.2.0', '25', '26']);
-  assert.deepEqual(compatibility.jobs.compatibility.strategy.matrix.os, ci.jobs.verify.strategy.matrix.os);
+  assert.deepEqual(compatibility.jobs.compatibility.strategy.matrix.os, ['ubuntu-latest', 'macos-latest']);
   const audit = readWorkflow('security');
   assert.ok(Object.hasOwn(audit.on, 'pull_request'));
   assert.ok(audit.jobs['source-history-artifact'].steps.some(step => step.run?.includes('gitleaks dir dist')));
 });
-
 test('manual source candidates pin every checkout and receipt to the selected revision', () => {
   const workflow = parseYaml(readFileSync(new URL('../.github/workflows/source-candidate.yml', import.meta.url), 'utf8'));
   assert.deepEqual(Object.keys(workflow.on).sort(), ['workflow_call', 'workflow_dispatch']);
@@ -831,6 +895,47 @@ test('candidate rejects mismatched receipts and requires successful same-revisio
   assert.notEqual(run('finalize', '--reports', reports).status, 0);
 });
 
+
+test('Windows contract profile fails closed off Windows', () => {
+  const result = spawnSync(process.execPath, ['scripts/verify.mjs', '--profile', 'windows', '--list'], {
+    cwd: path.resolve('.'),
+    encoding: 'utf8',
+  });
+  if (process.platform === 'win32') {
+    assert.equal(result.status, 0, result.stderr);
+  } else {
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /requires a Windows host/);
+  }
+});
+
+test('Windows contract profile selects focused gates', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'windows-profile-'));
+  try {
+    const fixture = path.join(root, 'verify.mjs');
+    copyFileSync(new URL('../scripts/verify.mjs', import.meta.url), fixture);
+    const preload = path.join(root, 'platform.cjs');
+    writeFileSync(preload, "Object.defineProperty(process, 'platform', { value: 'win32' });\n");
+    const result = spawnSync(process.execPath, ['--require', preload, fixture, '--profile', 'windows', '--list'], {
+      cwd: root,
+      encoding: 'utf8',
+      env: { ...process.env },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(result.stdout.trim().split('\n'), [
+      'check:source',
+      'check:tsconfig',
+      'export source preview',
+      'test:release-tools',
+      'build',
+      'check:standalone',
+      'test:artifact',
+      'test:windows',
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('source inventory rejects unregistered, missing and duplicate first-party test gates', () => {
   const existing = 'packages/example/src/existing.test.ts';
