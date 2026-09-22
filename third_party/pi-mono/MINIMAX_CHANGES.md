@@ -13,6 +13,22 @@ This directory vendors `pi-mono` as source so MiniMax can patch, validate, and s
 
 No upstream source files are changed in the baseline import.
 
+### 2026-09-21 — report why the edit unified patch was omitted
+
+- Reason: the unified patch is a second, independently timed Myers run over the same input as the display diff. When only that run ran out of time, `details` held a diff, no patch, and no `diffOmitted` — consumers could not tell an omitted patch apart from a tool that never produces one.
+- Affected package: `packages/coding-agent` (`@earendil-works/pi-coding-agent`), edit tool details assembly.
+- Change type: generic, upstreamable correctness fix. Add `details.patchOmitted`, set to `diffOmitted` when the display diff was abandoned and to `timeout` when only the patch was, so `details.patch` is absent exactly when `patchOmitted` is set. jsdiff routes `createTwoFilesPatch` through the same bounded `diffLines`, so `maxEditLength` is deterministic across both runs and can never trip for the patch alone; only its separately measured wall clock can. `diffOmitted` keeps its meaning and is unchanged.
+- Upstream PR: not opened.
+- Validation: `packages/agent-tools/src/desktop/edit-diff-bounds.test.ts` pins the invariant on both reachable paths (an ordinary edit and a bounded-out whole-file rewrite). The patch-only timeout is not unit-testable: it needs the two runs to land on opposite sides of a 5 s wall clock, which no deterministic input can force.
+
+### 2026-09-21 — bound the post-edit diff of the edit tool
+
+- Reason: `edit` computed its display diff and its unified patch with unbounded Myers, which costs O((N+M)·D) in the length D of the edit script. A whole-file rewrite therefore scaled quadratically in the number of changed lines: rewriting every line of a 20 000-line file blocked the tool for over two minutes and produced a multi-megabyte patch that no renderer displays. The sibling `write` path already caps the same work (`packages/agent-tools/src/shared/write-capture.ts`); `edit` had no cap.
+- Affected package: `packages/coding-agent` (`@earendil-works/pi-coding-agent`), edit tool diff generation.
+- Change type: generic, upstreamable performance fix. Pass jsdiff's `maxEditLength` (2000 edits) and `timeout` (5 s) to `diffLines` and `createTwoFilesPatch`. `maxEditLength` is the primary bound because it is deterministic and therefore testable; `timeout` only backstops slow machines. Replacing a line costs 2 edits, so the bound admits a full rewrite of any file up to 1000 lines and only gives up past that. When a bound trips, `details.diff` carries a one-line notice so every renderer still has something to show, `details.patch` is omitted, and the new `details.diffOmitted` names the reason. The unified patch is skipped once the display diff was abandoned rather than repeating a second Myers run that aborts on the same bound. The file is written before any diff runs, so a dropped diff never changes what lands on disk.
+- Upstream PR: not opened.
+- Validation: `packages/agent-tools/src/desktop/edit-diff-bounds.test.ts` (registered in the `capability` suite) covers an ordinary edit, a large block replacement that stays under the bound, a full rewrite at the bound that keeps its diff, and a whole-file rewrite that keeps the write while dropping the diff; `pnpm verify --profile platform` on macOS. Measured end to end through `createEditTool`, three runs each on the same machine: a 20 000-line whole-file rewrite took 167 620 / 173 523 / 167 547 ms unbounded and 200 / 192 / 193 ms bounded, with peak heap dropping from 47–60 MB to 14–15 MB; a 501-line rewrite takes 53 / 49 / 47 ms and a 1000-line rewrite 177 / 173 / 177 ms, both keeping their diff.
+
 ### 2026-09-19 — preserve the system role for Mistral Chat Completions
 
 - Reason: thinking-enabled custom OpenAI-compatible connections to `api.mistral.ai` emitted `developer`, which is absent from the [Mistral Chat Completions message contract](https://docs.mistral.ai/api/endpoint/chat). [OpenClaw's compatibility defaults](https://github.com/openclaw/openclaw/blob/e2bcb1614de060927121bd72de850cee3a08d308/packages/ai/src/transports/openai-completions-compat.ts#L184-L210) also disable this role for the Mistral public endpoint.
