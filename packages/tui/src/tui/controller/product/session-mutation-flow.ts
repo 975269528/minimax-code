@@ -1,3 +1,4 @@
+import { submittedEditorTransport } from '../../widgets/editor/editor.js';
 import type { TuiChatController } from '../chat-controller.js';
 import type { Component, Focusable } from '../../rendering/component.js';
 import { matchesKey } from '../../engine/public.js';
@@ -415,8 +416,12 @@ export class TuiSessionMutationFlow {
       this.options.onChanged();
       return 'retained';
     }
+    const boundContent = draft ? submittedEditorTransport(draft) ?? content : content;
     const transportContent =
-      rebuildSessionMutationTransport(invocation.targetMessage?.content, content) ?? content;
+      rebuildSessionMutationTransport(
+        invocation.targetMessage?.editContent ?? invocation.targetMessage?.content,
+        boundContent,
+      ) ?? boundContent;
     if (invocation.phase === 'resubmit') {
       this.invocations.set(invocation.sequence, { ...invocation, phase: 'resubmitting' });
       this.options.setHint(sessionMutationText('sessionMutation.hint.editSubmitting'));
@@ -658,7 +663,9 @@ export class TuiSessionMutationFlow {
     this.closeHistoryScreen();
     this.options.setEditTranscriptBoundary?.(targetMessage.id);
     this.invocations.set(sequence, { ...invocation, targetMessage, phase: 'editing' });
-    const content = visibleSessionMutationContent(targetMessage.content);
+    const content = visibleSessionMutationContent(
+      targetMessage.editContent ?? targetMessage.content,
+    );
     const placeholders = this.editAttachmentEntries();
     if (placeholders.length > 0) this.options.editor.restoreMessageDraft(content, placeholders);
     else this.options.editor.setText(content);
