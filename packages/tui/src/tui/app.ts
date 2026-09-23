@@ -127,7 +127,6 @@ export function createTuiApp(options: CreateTuiAppOptions): TuiApp {
     onTodoChange: (items) => tasks.setItems(items),
     onUserSubmissionProjected: () => {
       codexHandoffFlow?.dismiss();
-      followChatBottom();
       if (started && !stopped) tui.requestImmediateRender();
     },
     onSessionLifecycle: (sessionId) => {
@@ -446,7 +445,7 @@ export function createTuiApp(options: CreateTuiAppOptions): TuiApp {
       updateChrome(controller.snapshot());
       tui.requestRender();
     },
-    followBottom: () => layout.followBottom(),
+    followBottom: () => layout.forceFollowBottom(),
     requestWelcomeRebuild: () => tui.requestImmediateRender(),
     switchComposerDraft: (sessionKey) =>
       draftLifecycle?.switchSession(sessionKey) ?? Promise.resolve(),
@@ -541,7 +540,10 @@ export function createTuiApp(options: CreateTuiAppOptions): TuiApp {
       tui.requestRender();
     },
     userMessageCount: () => transcript.snapshot().filter((cell) => cell.kind === 'user').length,
-    onMessageAdmitted: (input) => businessEventTracker?.trackChatSend(input),
+    onMessageAdmitted: (input) => {
+      businessEventTracker?.trackChatSend(input);
+      layout.forceFollowBottom();
+    },
   });
   activeRunFlow.setCommandCatalog(commandFlow.catalog);
   runtimeEventFlow = new TuiRuntimeEventFlow({
