@@ -437,6 +437,7 @@ export class TuiDraftRecovery {
         : {}),
       createdAtMs: snapshot.createdAtMs,
       ...(snapshot.clientIntent ? { clientIntent: snapshot.clientIntent } : {}),
+      ...(snapshot.reviewRequest ? { reviewRequest: snapshot.reviewRequest } : {}),
     };
   }
 
@@ -547,6 +548,7 @@ function cloneRetrySubmission(retry: TuiRetrySubmission): TuiRetrySubmission {
         : {}),
       createdAtMs: retry.snapshot.createdAtMs,
       ...(retry.snapshot.clientIntent ? { clientIntent: retry.snapshot.clientIntent } : {}),
+      ...(retry.snapshot.reviewRequest ? { reviewRequest: retry.snapshot.reviewRequest } : {}),
     },
   };
 }
@@ -579,7 +581,8 @@ function relocateEditorAttachmentPlaceholders(
   };
 }
 
-function retainAvailableAttachmentPlaceholders(
+/** Drops editor attachment placeholders whose backing file no longer exists. */
+export function retainAvailableAttachmentPlaceholders(
   editor: EditorDraftSnapshot,
   attachments: readonly TuiAttachment[],
 ): EditorDraftSnapshot {
@@ -620,6 +623,16 @@ function relocateStoredDraftAssets(
         ...retry.snapshot,
         attachments: retryAttachments,
         editor: relocateEditorAttachmentPlaceholders(retry.snapshot.editor, relocatedPaths),
+        ...(retry.snapshot.transportAttachments
+          ? {
+              transportAttachments: retry.snapshot.transportAttachments.map((attachment) => ({
+                ...attachment,
+                ...(attachment.filePath && relocatedPaths.has(attachment.filePath)
+                  ? { filePath: relocatedPaths.get(attachment.filePath) }
+                  : {}),
+              })),
+            }
+          : {}),
       },
     };
   });
@@ -711,6 +724,8 @@ function isSubmissionSnapshot(value: unknown): value is TuiSubmissionSnapshot {
     (value.clientIntent !== undefined &&
       value.clientIntent !== 'plan-entry' &&
       value.clientIntent !== 'plan-exit') ||
+    (value.reviewRequest !== undefined &&
+      (!isRecord(value.reviewRequest) || value.reviewRequest.scope !== 'local_changes')) ||
     !Number.isFinite(value.createdAtMs)
   ) {
     return false;
