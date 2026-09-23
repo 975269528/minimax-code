@@ -59,7 +59,8 @@ export class TuiTurnProjection {
 
   beginTurn(turnId: string, timestamp: number): void {
     let changed = this.todoProjection.clearSettled();
-    // Shell results are one-time local feedback; history refreshes retain ephemeral cells.
+    changed = this.removePreviousTerminalDuration(turnId) || changed;
+    // One-time feedback survives history refreshes, so dismiss it when a new run starts.
     for (const cell of this.transcript.snapshot()) {
       if (
         cell.kind === 'shell' &&
@@ -71,6 +72,16 @@ export class TuiTurnProjection {
     }
     if (changed) this.onChange();
     this.liveProjection.beginTurn(turnId, timestamp);
+  }
+
+  removePreviousTerminalDuration(turnId?: string): boolean {
+    let changed = false;
+    for (const cell of this.transcript.snapshot()) {
+      if (cell.kind === 'turn-duration' && (turnId === undefined || cell.turnId !== turnId)) {
+        changed = this.transcript.remove(cell.id) || changed;
+      }
+    }
+    return changed;
   }
 
   projectOptimisticUserMessage(
