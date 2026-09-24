@@ -1,13 +1,16 @@
+import { SemanticReplayRegistry } from '../packages/local-runtime-v2/src/service/turn-system/agent-host/events/semantic-replay-registry.js';
 import { createHash } from 'node:crypto';
+import { createCanonicalHistoryScanner, scanCanonicalHistoryArtifacts } from '../packages/local-runtime-v2/src/service/session-system/messages/history/mutation/canonical-history-scanner.js';
 import {
   canonicalActiveHistoryRevision,
   canonicalHistoryRevision,
   CanonicalHistoryJsonlDataSource,
   decodeCanonicalHistoryEnvelope,
   inspectCanonicalHistorySequence,
+  type CanonicalHistoryEnvelope,
 } from '../packages/local-runtime-v2/src/infra/file/canonical-history-jsonl.js';
 import { canonicalJson } from '../packages/local-runtime-v2/src/infra/file/canonical-history-json-value.js';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, mkdir, readFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -356,6 +359,36 @@ describe('semantic snapshots', () => {
       expect(estimateSemanticValueSize(snapshot.value)).toBe(bytes);
     }
   });
+  it('keeps exact size accounting when owned subtrees are reused and aliases repeat', () => {
+    const body = captureSemanticSnapshot({ text: '中文🙂'.repeat(2048), parts: [-0, undefined] }).value;
+    const expected = estimateSemanticValueSize(structuredClone(body));
+    expect(estimateSemanticValueSize(body)).toBe(expected);
+    expect(estimateSemanticValueSize(body)).toBe(expected);
+    const wrapped = captureSemanticSnapshot({ a: body, b: body }).value;
+    expect(estimateSemanticValueSize(wrapped)).toBe(estimateSemanticValueSize(structuredClone(wrapped)));
+    const mutable = { nested: { text: 'before' } };
+    const before = estimateSemanticValueSize(mutable);
+    mutable.nested.text = 'after with a longer body';
+    expect(estimateSemanticValueSize(mutable)).not.toBe(before);
+    const shallow = Object.freeze({ nested: { text: 'a' } });
+    estimateSemanticValueSize(shallow);
+    shallow.nested.text = 'longer';
+    expect(estimateSemanticValueSize(shallow)).toBe(estimateSemanticValueSize(structuredClone(shallow)));
+  });
+  it('preserves changed-parent aliases, own __proto__, empty objects and cycles during reuse', () => {
+    const shared = { child: { text: 'same' } };
+    const prior = captureSemanticSnapshot({ ['__proto__']: shared, first: shared, second: {}, tail: [1] }).value;
+    const input = { ['__proto__']: shared, first: shared, second: {}, tail: [2] };
+    const next = captureSemanticSnapshot(input, prior);
+    expect(next.value).toEqual(structuredClone(input));
+    expect(next.value['__proto__']).toBe(next.value.first);
+    expect(next.value.first).toBe(prior.first);
+    expect(next.value.second).toBe(prior.second);
+    expect(next.fingerprint).toBe(captureSemanticSnapshot(input).fingerprint);
+    const cyclic: { child?: unknown } = {};
+    cyclic.child = cyclic;
+    expect(() => captureSemanticSnapshot(cyclic, captureSemanticSnapshot({ child: {} }).value)).toThrow('Cyclic');
+  });
   it('detaches and freezes eagerly but hashes only when identity is requested', () => {
     const hash = vi.spyOn(IncrementalSha256.prototype, 'update');
     try {
@@ -598,6 +631,101 @@ describe('semantic snapshots', () => {
       ).size,
     ).toBe(13);
     expect(fingerprint(['ab', 'c'])).not.toBe(fingerprint(['a', 'bc']));
+  });
+});
+
+describe('incremental replay identities', () => {
+  it('preserves semantic equality, ordering and special-value distinctions', () => {
+    const values: unknown[] = [undefined, null, NaN, Infinity, -Infinity, -0, 0, '', [],
+      Array(1), [undefined], {}, { a: undefined }, ['ab', 'c'], ['a', 'bc'],
+      { b: 2, a: 1 }, { a: 1, b: 2 }, { text: '\ud800🙂中文' }, { text: '\ufffd🙂中文' }];
+    const shared = { a: 'repeat' };
+    values.push([shared, shared], [{ a: 'repeat' }, { a: 'repeat' }]);
+    const snapshots = values.map(value => captureSemanticSnapshot(value));
+    for (const a of snapshots) for (const b of snapshots) {
+      expect(a.replayFingerprint === b.replayFingerprint).toBe(a.fingerprint === b.fingerprint);
+    }
+  });
+
+  it('reuses owned children without masking caller mutations or changing byte budgets', () => {
+    const raw = { body: '中文🙂'.repeat(4096), metadata: { version: 1 } };
+    const old = captureSemanticSnapshot(raw);
+    const before = old.replayFingerprint;
+    const first = captureSemanticSnapshot({ messages: [old.value, old.value] });
+    const second = captureSemanticSnapshot(structuredClone(first.value));
+    expect(first.replayFingerprint).toBe(second.replayFingerprint);
+    expect(estimateSemanticValueSize(first.value)).toBe(estimateSemanticValueSize(second.value));
+    raw.metadata.version = 2;
+    expect(old.replayFingerprint).toBe(before);
+    expect(captureSemanticSnapshot(raw).replayFingerprint).not.toBe(before);
+    const updated = captureSemanticSnapshot({ messages: [old.value, captureSemanticSnapshot(raw).value] });
+    expect(updated.replayFingerprint).not.toBe(first.replayFingerprint);
+  });
+});
+
+describe('ordered replay eviction', () => {
+  function pending() {
+    let resolve!: (value: number) => void;
+    let reject!: (reason: Error) => void;
+    const promise = new Promise<number>((yes, no) => { resolve = yes; reject = no; });
+    return { promise, resolve, reject };
+  }
+  const request = (identity: string, execute: () => Promise<number>, fingerprint = identity) => ({
+    identity, fingerprint, execute, conflict: () => new Error('conflict'),
+  });
+
+  it('evicts by insertion order rather than completion order and keeps conflict tombstones', async () => {
+    const registry = new SemanticReplayRegistry<number>(3, {
+      maximumSettledBytes: 2, measureSettledBytes: value => value,
+    });
+    const a = pending(), b = pending(), c = pending();
+    const pa = registry.run(request('a', () => a.promise));
+    const pb = registry.run(request('b', () => b.promise));
+    const pc = registry.run(request('c', () => c.promise));
+    c.resolve(1); await pc;
+    b.resolve(1); await pb;
+    a.resolve(1); await pa;
+    const execute = vi.fn(async () => 1);
+    await expect(registry.run(request('a', execute))).rejects.toThrow('no longer retained');
+    await expect(registry.run(request('a', execute, 'different'))).rejects.toThrow('conflict');
+    expect(execute).not.toHaveBeenCalled();
+    expect(registry.run(request('b', execute))).toBe(pb);
+    expect(registry.run(request('c', execute))).toBe(pc);
+    await registry.run(request('d', execute));
+    await registry.run(request('a', execute));
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores a superseded settlement after synchronous execution re-entry', async () => {
+    const registry = new SemanticReplayRegistry<number>(3, {
+      maximumSettledBytes: 2, measureSettledBytes: value => value,
+    });
+    const inner = pending(), outer = pending();
+    let innerExecution!: Promise<number>;
+    const outerExecution = registry.run(request('a', () => {
+      innerExecution = registry.run(request('a', () => inner.promise));
+      return outer.promise;
+    }));
+    outer.resolve(1); await outerExecution;
+    inner.resolve(10); await innerExecution;
+    const execute = vi.fn(async () => 1);
+    await expect(registry.run(request('a', execute))).resolves.toBe(1);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('protects pending work, removes rejected entries, and permits an exact retry', async () => {
+    const registry = new SemanticReplayRegistry<number>(1);
+    const a = pending(), b = pending();
+    const pa = registry.run(request('a', () => a.promise));
+    const pb = registry.run(request('b', () => b.promise));
+    b.resolve(2); await pb;
+    const execute = vi.fn(async () => 3);
+    expect(registry.run(request('a', execute))).toBe(pa);
+    await expect(registry.run(request('b', execute))).resolves.toBe(3);
+    a.reject(new Error('retryable'));
+    await expect(pa).rejects.toThrow('retryable');
+    await expect(registry.run(request('a', execute))).resolves.toBe(3);
+    expect(execute).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -1008,6 +1136,31 @@ describe('owned decoded history rows', () => {
     });
   });
 
+  it('keeps canonical digests exact across growing, rewritten and revisited histories', async () => {
+    await withReaders(async (path, reader) => {
+      const snapshots: { records: readonly CanonicalHistoryEnvelope[]; revision: string }[] = [];
+      let rows: ReturnType<typeof row>[] = [];
+      for (let index = 0; index < 48; index++) {
+        if (index % 11 === 0) rows = rows.slice(0, 2);
+        if (index % 7 === 0 && rows[0]) rows[0] = row(`edited-${index}`, '\udc00中🙂');
+        rows.push(row(String(index), `body-${index}:中文🙂\ud800`.repeat(100)));
+        await writeFile(path, encode(rows));
+        const records = index % 2 === 0
+          ? await reader.readActiveStrict()
+          : (await reader.readActiveWithBytes()).records;
+        const revision = `sha256:${createHash('sha256')
+          .update(canonicalJson(rows.map(decodeCanonicalHistoryEnvelope)), 'utf8')
+          .digest('hex')}`;
+        expect(canonicalActiveHistoryRevision(records)).toBe(revision);
+        expect(canonicalHistoryRevision(records)).toBe(revision);
+        snapshots.push({ records, revision });
+      }
+      for (const snapshot of snapshots.reverse()) {
+        expect(canonicalHistoryRevision(snapshot.records)).toBe(snapshot.revision);
+      }
+    });
+  });
+
   it('keeps private cached arrays immutable without exposing their state', async () => {
     await withReaders(async (path, reader) => {
       await writeFile(path, encode([row('a'), row('b')]));
@@ -1181,5 +1334,244 @@ describe('owned decoded history rows', () => {
     } finally {
       await rm(dataDir, { recursive: true, force: true });
     }
+  });
+});
+
+
+describe('internal history snapshot handoff', () => {
+  async function fixture(run: (input: {
+    provider: ReturnType<typeof createSessionSystemCanonicalHistoryProvider>;
+    session: SessionRecord;
+    dataDir: string;
+  }) => Promise<void>) {
+    const dataDir = await mkdtemp(join(tmpdir(), 'mcode-history-handoff-'));
+    const session: SessionRecord = {
+      sessionId: 'handoff', agentName: 'test', workspaceDir: dataDir,
+      runtime: 'pi-agent', sessionType: 'root', sessionKind: 'conversation',
+      archived: false, status: 'idle', createdAtMs: 0, updatedAtMs: 0,
+      historyRelativeDir: utcSessionHistoryRelativeDir('handoff', 0),
+    };
+    try {
+      await run({ dataDir, session, provider: createSessionSystemCanonicalHistoryProvider({
+        dataDir, sessions: { get: async () => session },
+      }) });
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  }
+
+  it('reuses frozen messages only in the internal view and keeps ordinary callers isolated', async () => {
+    await fixture(async ({ provider, session, dataDir }) => {
+      const internal = provider.withSnapshotTransform!(snapshot => snapshot);
+      const change = (id: string, text: string) => ({
+        sessionId: session.sessionId, turnId: id, reason: 'messageDelta' as const,
+        operation: { id, kind: 'append' },
+        messages: [{ role: 'user', timestamp: 1, content: [{ type: 'text', text }] }],
+      });
+      const input = change('one', 'first');
+      const first = await internal.append(input);
+      input.messages[0]!.content[0]!.text = 'caller edit';
+      const second = await internal.append(change('two', 'second'));
+      expect(second.messages[0]).toBe(first.messages[0]);
+      expect(first.messages).toHaveLength(1);
+      expect(Object.isFrozen(first.messages[0])).toBe(true);
+      const message = first.messages[0] as typeof input.messages[number];
+      expect(Object.isFrozen(message.content[0])).toBe(true);
+      expect(message.content[0]!.text).toBe('first');
+      const ordinary = await provider.readActive(session.sessionId);
+      expect(ordinary).toEqual(second);
+      expect(ordinary.messages[0]).not.toBe(first.messages[0]);
+      (ordinary.messages[0] as typeof message).content[0]!.text = 'ordinary caller edit';
+      const inspected = await internal.inspectActive(session.sessionId);
+      (inspected.messages[0] as typeof message).content[0]!.text = 'inspection edit';
+      expect(await internal.readActive(session.sessionId)).toEqual(second);
+      const path = resolveSessionHistoryPaths(dataDir, session).messages;
+      const bytes = await readFile(path, 'utf8');
+      await writeFile(path, bytes.replace('first', 'other'));
+      const rewritten = await internal.readActive(session.sessionId);
+      expect((rewritten.messages[0] as typeof message).content[0]!.text).toBe('other');
+      expect(rewritten.messages[0]).not.toBe(first.messages[0]);
+      expect(message.content[0]!.text).toBe('first');
+      await writeFile(path, '{bad}\n');
+      await expect(internal.readActive(session.sessionId)).rejects.toThrow();
+      await provider.delete(session.sessionId);
+      expect((await internal.readActive(session.sessionId)).messages).toEqual([]);
+      const recreated = await internal.append(change('three', 'new'));
+      expect(recreated.messages).toHaveLength(1);
+      expect(recreated.messages[0]).not.toBe(first.messages[0]);
+    });
+  });
+
+  it('preserves pending-tail recovery, compaction identities and snapshot generation', async () => {
+    await fixture(async ({ provider, session }) => {
+      const internal = provider.withSnapshotTransform!(snapshot => captureSemanticSnapshot(snapshot).value);
+      const active = await internal.append({
+        sessionId: session.sessionId, turnId: 'pending', reason: 'messageDelta',
+        operation: { id: 'pending', kind: 'append' },
+        messages: [
+          { role: 'user', timestamp: 1, content: 'question' },
+          { role: 'assistant', timestamp: 2, content: [
+            { type: 'toolCall', id: 'call-1', name: 'bash', arguments: { command: 'pwd' } },
+          ] },
+        ],
+      });
+      expect(active.messages).toHaveLength(2);
+      expect(await internal.readActive(session.sessionId)).toEqual(active);
+      const settled = await internal.read(session.sessionId);
+      expect(settled.messages).not.toEqual(active.messages);
+      expect(await provider.read(session.sessionId)).toEqual(settled);
+      const compacted = await internal.compact({
+        sessionId: session.sessionId, turnId: 'compact', reason: 'replaceMessages',
+        operation: { id: 'compact', kind: 'compaction' }, compactionId: 'compact',
+        method: 'llm_checkpoint', summary: 'summary',
+        messages: [{ role: 'compactionSummary', summary: 'summary' }],
+      });
+      expect(compacted.generation).toBe(1);
+      const plain = await provider.readActive(session.sessionId);
+      expect(compacted.messages).toEqual(plain.messages);
+      expect(compacted.identityVector).toEqual(plain.identityVector);
+      expect(compacted.revision).toBe(plain.revision);
+      expect(Object.isFrozen(compacted.messages)).toBe(true);
+      expect((await internal.readActive(session.sessionId)).messages).toEqual(plain.messages);
+      expect(active.messages).toHaveLength(2);
+    });
+  });
+
+  it('keeps injected adapters outside the immutable handoff', async () => {
+    await fixture(async ({ dataDir, session }) => {
+      const provider = createSessionSystemCanonicalHistoryProvider({
+        dataDir, sessions: { get: async () => session },
+        files: createCanonicalHistoryFileAdapter(),
+      });
+      expect(provider.withSnapshotTransform).toBeUndefined();
+    });
+  });
+});
+
+describe('incremental history index scanning', () => {
+  const row = (id: string, content = '中文🙂') => ({
+    message_id: `msg-user-v1-${id}`, turn_id: `turn-${id}`,
+    message: { role: 'user', content, timestamp: 1 },
+  });
+  const encode = (rows: unknown[]) => rows.map(value => JSON.stringify(value)).join('\n') + '\n';
+  async function fixture(run: (input: {
+    paths: import('../packages/local-runtime-v2/src/service/session-system/messages/history/mutation/canonical-history-scanner.js').CanonicalHistoryScannerPaths;
+    compare: () => Promise<Awaited<ReturnType<typeof scanCanonicalHistoryArtifacts>>>;
+  }) => Promise<void>) {
+    const dir = await mkdtemp(join(tmpdir(), 'mcode-index-scan-'));
+    const paths = { activePath: join(dir, 'messages.jsonl'), snapshotsPath: join(dir, 'snapshots'), sessionId: 's1' };
+    const scan = createCanonicalHistoryScanner();
+    const files = createCanonicalHistoryFileAdapter({ reuseDecodedRecords: true });
+    try {
+      await mkdir(paths.snapshotsPath);
+      await run({ paths, compare: async () => {
+        const actual = await scan(paths, files);
+        expect(actual).toEqual(await scanCanonicalHistoryArtifacts(paths));
+        return actual;
+      }});
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  }
+
+  it('matches full scanning across append, unchanged reads and new external user rows', async () => {
+    await fixture(async ({paths, compare}) => {
+      const rows = [row('a')];
+      await writeFile(paths.activePath, encode(rows));
+      const first = await compare();
+      for (let i = 0; i < 20; i++) {
+        rows.push(row(String(i), 'x'.repeat(4096)));
+        await writeFile(paths.activePath, encode(rows));
+        expect((await compare()).locators).toHaveLength(rows.length);
+        await compare();
+      }
+      expect(first.locators).toHaveLength(1);
+    });
+  });
+  it('rebuilds positions after same-length changes, truncation and recreation', async () => {
+    await fixture(async ({paths, compare}) => {
+      await writeFile(paths.activePath, encode([row('a', 'aaa'), row('b', 'bbb')]));
+      await compare();
+      await writeFile(paths.activePath, encode([row('z', 'zzz'), row('b', 'bbb')]));
+      expect((await compare()).locators[0]?.messageId).toBe('msg-user-v1-z');
+      await writeFile(paths.activePath, encode([row('c')]));
+      await compare();
+      await rm(paths.activePath);
+      await expect(compare()).rejects.toThrow();
+      await writeFile(paths.activePath, encode([row('a'), row('b')]));
+      await compare();
+    });
+  });
+  it('matches UTF-8 replacement offsets, CRLF, whitespace and unterminated tails', async () => {
+    await fixture(async ({paths, compare}) => {
+      const first = Buffer.from('  ' + JSON.stringify(row('a', 'X中文🙂')) + ' \r\n');
+      first[first.indexOf('X')] = 0xff;
+      await writeFile(paths.activePath, first);
+      await compare();
+      const second = Buffer.from(JSON.stringify(row('b')));
+      await writeFile(paths.activePath, Buffer.concat([first, second]));
+      await compare();
+      await writeFile(paths.activePath, Buffer.concat([first, second, Buffer.from('\n' + encode([row('c')]))]));
+      await compare();
+    });
+  });
+  it('keeps full validation after cache hits and rejects duplicate external identities', async () => {
+    await fixture(async ({paths, compare}) => {
+      await writeFile(paths.activePath, encode([row('a')]));
+      await compare();
+      await writeFile(paths.activePath, encode([row('a'), row('a')]));
+      await expect(compare()).rejects.toThrow();
+      await writeFile(paths.activePath, '{invalid}\n');
+      await expect(compare()).rejects.toThrow();
+      await writeFile(paths.activePath, encode([row('a')]));
+      await compare();
+    });
+  });
+  it('falls back beyond the retained byte budget without changing offsets', async () => {
+    await fixture(async ({paths, compare}) => {
+      const rows = [row('a', 'x'.repeat(4 * 1024 * 1024)), row('b')];
+      await writeFile(paths.activePath, encode(rows));
+      await compare();
+      rows.push(row('c'));
+      await writeFile(paths.activePath, encode(rows));
+      await compare();
+    });
+  });
+  it('rechecks fresh bytes when history changes after the provider read', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'mcode-index-race-'));
+    const paths = { activePath: join(dir, 'messages.jsonl'), snapshotsPath: join(dir, 'snapshots'), sessionId: 's1' };
+    const files = createCanonicalHistoryFileAdapter({ reuseDecodedRecords: true });
+    const scan = createCanonicalHistoryScanner();
+    try {
+      await writeFile(paths.activePath, encode([row('a')]));
+      await files.readActiveStrict(paths.activePath);
+      await scan(paths, files);
+      await files.readActiveStrict(paths.activePath);
+      await writeFile(paths.activePath, '{invalid}\n');
+      await expect(scan(paths, files)).rejects.toThrow('malformed-jsonl');
+      await writeFile(paths.activePath, encode([row('z')]));
+      expect((await scan(paths, files)).locators[0]?.messageId).toBe('msg-user-v1-z');
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+  it('continues checking snapshot revisions, lineage and symlinks after warm scans', async () => {
+    await fixture(async ({paths, compare}) => {
+      const parent = [row('a')];
+      const parentPath = join(paths.snapshotsPath, 'g000000000000--compact.jsonl');
+      await writeFile(parentPath, encode(parent));
+      const active = [{ ...row('a'), history_artifact: {
+        schemaVersion: 1, generation: 1, producedBy: 'llm_checkpoint',
+        parentSnapshot: { generation: 0, compactionId: 'compact', revision: canonicalHistoryRevision(parent) },
+      } }, row('b')];
+      await writeFile(paths.activePath, encode(active));
+      await compare();
+      await compare();
+      await writeFile(parentPath, encode([row('a', 'modified')]));
+      await expect(compare()).rejects.toThrow('artifact-revision-mismatch');
+      await writeFile(parentPath, encode(parent));
+      await compare();
+      const original = await readFile(parentPath);
+      await rm(parentPath);
+      await writeFile(join(paths.snapshotsPath, 'target'), original);
+      await symlink('target', parentPath);
+      await expect(compare()).rejects.toThrow('unsafe-artifact');
+    });
   });
 });

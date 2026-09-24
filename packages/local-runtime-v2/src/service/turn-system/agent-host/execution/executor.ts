@@ -131,7 +131,9 @@ export class LocalRuntimeTurnExecutor<
   async execute(input: LocalTurnExecutionInput<TAgent>): Promise<AgentHostTurnOutcome> {
     let unboundPluginHookTranscriptCleanup: (() => Promise<void>) | undefined;
     try {
-      const eventWriter = createLocalTurnEventWriter(input, this.options.projectRuntimeEvent);
+      const eventWriter = createLocalTurnEventWriter(input, this.options.projectRuntimeEvent, {
+        retainEvents: this.options.runtime.acceptsEventSummary !== true,
+      });
       const pluginHookEventReporter = createLocalPluginHookEventReporter({
         writer: eventWriter,
         sessionId: input.lease.sessionId,
